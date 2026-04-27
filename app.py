@@ -27,11 +27,13 @@ CORS(app, origins="*")
 # -----------------------------
 load_dotenv()
 
+# TEMPORARY DEBUG: hardcode the key here
 api_key = "AIzaSyAi8NqSEQL1wJBoke4n1AXNxBqldwYugUs"
+
+# model can still come from env, or default
 model_name = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash").strip()
 
-print("ENV has GEMINI_API_KEY:", "GEMINI_API_KEY" in os.environ)
-print("ENV has GEMINI_MODEL:", "GEMINI_MODEL" in os.environ)
+print("DEBUG hardcoded key loaded:", "FOUND" if api_key else "NOT FOUND")
 print("API key preview:", (api_key[:6] + "...") if api_key else "NONE")
 print("Model:", model_name)
 
