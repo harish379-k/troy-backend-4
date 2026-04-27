@@ -25,14 +25,14 @@ CORS(app, origins="*")
 # -----------------------------
 # Environment / Gemini config
 # -----------------------------
-# Works locally with .env
-# Works on Render with Environment Variables
 load_dotenv()
 
-api_key = os.getenv("AIzaSyAi8NqSEQL1wJBoke4n1AXNxBqldwYugUs")
-model_name = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+api_key = "AIzaSyAi8NqSEQL1wJBoke4n1AXNxBqldwYugUs"
+model_name = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash").strip()
 
-print("Loaded Gemini key:", "FOUND" if api_key else "NOT FOUND")
+print("ENV has GEMINI_API_KEY:", "GEMINI_API_KEY" in os.environ)
+print("ENV has GEMINI_MODEL:", "GEMINI_MODEL" in os.environ)
+print("API key preview:", (api_key[:6] + "...") if api_key else "NONE")
 print("Model:", model_name)
 
 if api_key:
@@ -256,7 +256,8 @@ def health():
     return jsonify({
         "status": "ok",
         "gemini_key_loaded": bool(api_key),
-        "model": model_name
+        "model": model_name,
+        "key_preview": (api_key[:6] + "...") if api_key else "NONE"
     })
 
 
