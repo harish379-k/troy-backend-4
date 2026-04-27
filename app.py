@@ -6,7 +6,6 @@ from pathlib import Path
 
 from flask import Flask, request, jsonify
 from flask_cors import CORS
-from werkzeug.utils import secure_filename
 from dotenv import load_dotenv
 from PIL import Image
 import google.generativeai as genai
@@ -26,8 +25,8 @@ CORS(app, origins="*")
 # -----------------------------
 # Environment / Gemini config
 # -----------------------------
-# Local: reads from .env if present
-# Render: reads from Render Environment Variables
+# Works locally with .env
+# Works on Render with Environment Variables
 load_dotenv()
 
 api_key = os.getenv("AIzaSyAi8NqSEQL1wJBoke4n1AXNxBqldwYugUs")
@@ -284,7 +283,12 @@ def analyze():
         filepath = UPLOAD_FOLDER / filename
         image_file.save(str(filepath))
 
-        img = Image.open(filepath)
+        try:
+            img = Image.open(filepath)
+        except Exception:
+            return jsonify({
+                "error": "Could not open this image. Please try JPG, PNG, or WEBP."
+            }), 400
 
         prompt = f"""
 You are analyzing a child's building made with Troy wooden blocks.
