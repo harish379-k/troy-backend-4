@@ -90,7 +90,6 @@ def ensure_learning_cards(cards):
         if color not in allowed_colors:
             color = "cream"
 
-        # normalize for frontend
         if color == "amber":
             color = "cream"
         if color == "mint":
