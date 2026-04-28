@@ -286,13 +286,16 @@ def home():
 
 @app.route("/health", methods=["GET"])
 def health():
+    test_value = os.environ.get("RENDER_TEST_VALUE", "")
     raw_key = get_api_key()
     model_name = get_model_name()
 
     return jsonify({
         "status": "ok",
+        "render_test_value": test_value,
+        "render_test_length": len(test_value),
+        "env_has_render_test_value": "RENDER_TEST_VALUE" in os.environ,
         "env_has_render_gemini_key": "RENDER_GEMINI_KEY" in os.environ,
-        "env_has_gemini_key": "GEMINI_API_KEY" in os.environ,
         "env_has_gemini_model": "GEMINI_MODEL" in os.environ,
         "gemini_key_loaded": bool(raw_key),
         "key_length": len(raw_key),
