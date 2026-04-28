@@ -29,7 +29,10 @@ sessions = {}
 # Gemini config helpers
 # -----------------------------
 def get_api_key():
-    return os.environ.get("AIzaSyDnPgWAr07vZ84orhgaLGoJq140XGTrJr0", "").strip()
+    return (
+        os.environ.get("AIzaSyDnPgWAr07vZ84orhgaLGoJq140XGTrJr0", "").strip()
+        or os.environ.get("AIzaSyDnPgWAr07vZ84orhgaLGoJq140XGTrJr0", "").strip()
+    )
 
 
 def get_model_name():
@@ -288,11 +291,12 @@ def health():
 
     return jsonify({
         "status": "ok",
+        "env_has_render_gemini_key": "RENDER_GEMINI_KEY" in os.environ,
         "env_has_gemini_key": "GEMINI_API_KEY" in os.environ,
         "env_has_gemini_model": "GEMINI_MODEL" in os.environ,
         "gemini_key_loaded": bool(raw_key),
-        "key_preview": (raw_key[:6] + "...") if raw_key else "NONE",
         "key_length": len(raw_key),
+        "key_preview": (raw_key[:6] + "...") if raw_key else "NONE",
         "model": model_name
     })
 
