@@ -274,7 +274,10 @@ def health():
     return jsonify({
         "status": "ok",
         "gemini_key_loaded": bool(api_key),
-        "model": model_name
+        "model": model_name,
+        "env_has_gemini_key": "GEMINI_API_KEY" in os.environ,
+        "env_has_gemini_model": "GEMINI_MODEL" in os.environ,
+        "key_preview": (api_key[:6] + "...") if api_key else "NONE"
     })
 
 
