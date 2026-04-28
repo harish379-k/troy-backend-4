@@ -6,7 +6,6 @@ from pathlib import Path
 
 from flask import Flask, request, jsonify
 from flask_cors import CORS
-from dotenv import load_dotenv
 from PIL import Image
 import google.generativeai as genai
 
@@ -23,11 +22,9 @@ app = Flask(__name__)
 CORS(app, origins="*")
 
 # -----------------------------
-# Environment / Gemini config
+# Gemini config (Render only)
 # -----------------------------
-load_dotenv()
-
-api_key = os.environ.get("AIzaSyBkHRg2FaOalunpfompukjilbyRhhsotww", "").strip()
+api_key = os.environ.get("AIzaSyDnPgWAr07vZ84orhgaLGoJq140XGTrJr0", "").strip()
 model_name = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash").strip()
 
 print("Loaded Gemini key:", "FOUND" if api_key else "NOT FOUND")
@@ -271,13 +268,15 @@ def home():
 
 @app.route("/health", methods=["GET"])
 def health():
+    raw_key = os.environ.get("GEMINI_API_KEY", "")
     return jsonify({
         "status": "ok",
-        "gemini_key_loaded": bool(api_key),
-        "model": model_name,
         "env_has_gemini_key": "GEMINI_API_KEY" in os.environ,
         "env_has_gemini_model": "GEMINI_MODEL" in os.environ,
-        "key_preview": (api_key[:6] + "...") if api_key else "NONE"
+        "gemini_key_loaded": bool(raw_key.strip()),
+        "key_preview": (raw_key.strip()[:6] + "...") if raw_key.strip() else "NONE",
+        "key_length": len(raw_key),
+        "model": model_name
     })
 
 
