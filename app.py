@@ -21,20 +21,35 @@ ALLOWED_EXTENSIONS = {"png", "jpg", "jpeg", "webp", "heic", "heif"}
 app = Flask(__name__)
 CORS(app, origins="*")
 
-# -----------------------------
-# Gemini config (Render only)
-# -----------------------------
-api_key = os.environ.get("AIzaSyDnPgWAr07vZ84orhgaLGoJq140XGTrJr0", "").strip()
-model_name = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash").strip()
-
-print("Loaded Gemini key:", "FOUND" if api_key else "NOT FOUND")
-print("Model:", model_name)
-
-if api_key:
-    genai.configure(api_key=api_key)
-
 # Temporary in-memory session storage
 sessions = {}
+
+
+# -----------------------------
+# Gemini config helpers
+# -----------------------------
+def get_api_key():
+    return os.environ.get("AIzaSyDnPgWAr07vZ84orhgaLGoJq140XGTrJr0", "").strip()
+
+
+def get_model_name():
+    return os.environ.get("GEMINI_MODEL", "gemini-2.5-flash").strip()
+
+
+def build_model():
+    api_key = get_api_key()
+    model_name = get_model_name()
+
+    if not api_key:
+        return None, api_key, model_name
+
+    genai.configure(api_key=api_key)
+    model = genai.GenerativeModel(model_name)
+    return model, api_key, model_name
+
+
+print("Loaded Gemini key:", "FOUND" if get_api_key() else "NOT FOUND")
+print("Model:", get_model_name())
 
 
 # -----------------------------
@@ -268,13 +283,15 @@ def home():
 
 @app.route("/health", methods=["GET"])
 def health():
-    raw_key = os.environ.get("GEMINI_API_KEY", "")
+    raw_key = get_api_key()
+    model_name = get_model_name()
+
     return jsonify({
         "status": "ok",
         "env_has_gemini_key": "GEMINI_API_KEY" in os.environ,
         "env_has_gemini_model": "GEMINI_MODEL" in os.environ,
-        "gemini_key_loaded": bool(raw_key.strip()),
-        "key_preview": (raw_key.strip()[:6] + "...") if raw_key.strip() else "NONE",
+        "gemini_key_loaded": bool(raw_key),
+        "key_preview": (raw_key[:6] + "...") if raw_key else "NONE",
         "key_length": len(raw_key),
         "model": model_name
     })
@@ -295,7 +312,9 @@ def analyze():
         if not allowed_file(image_file.filename):
             return jsonify({"error": "Invalid file type. Use png, jpg, jpeg, webp, heic, or heif"}), 400
 
-        if not api_key:
+        model, current_api_key, model_name = build_model()
+
+        if not current_api_key:
             return jsonify({"error": "GEMINI_API_KEY not found"}), 500
 
         file_ext = image_file.filename.rsplit(".", 1)[1].lower()
@@ -404,7 +423,6 @@ Rules:
 - Keep language parent-friendly
 """
 
-        model = genai.GenerativeModel(model_name)
         response = call_gemini_with_retry(model, prompt, img)
 
         raw_text = response.text.strip()
@@ -533,7 +551,9 @@ def ask():
         if not question:
             return jsonify({"error": "Question is required"}), 400
 
-        if not api_key:
+        model, current_api_key, model_name = build_model()
+
+        if not current_api_key:
             return jsonify({"error": "GEMINI_API_KEY not found"}), 500
 
         prompt = f"""
@@ -549,7 +569,6 @@ Answer in a short, warm, simple way for a parent.
 Keep it to 3-5 lines max.
 """
 
-        model = genai.GenerativeModel(model_name)
         response = model.generate_content(prompt)
 
         return jsonify({
