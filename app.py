@@ -2,6 +2,7 @@ import os
 import json
 import uuid
 import time
+import base64
 from pathlib import Path
 
 from flask import Flask, request, jsonify
@@ -29,9 +30,16 @@ sessions = {}
 # Gemini config helpers
 # -----------------------------
 def get_api_key():
+    b64_key = os.environ.get("QUl6YVN5Q2ZiQmhETF9LXzFiamdwWEV1MEU4VnIxVmFkMlFMdGdN", "").strip()
+    if b64_key:
+        try:
+            return base64.b64decode(b64_key).decode("utf-8").strip()
+        except Exception as e:
+            print("Failed to decode RENDER_GEMINI_KEY_B64:", e)
+
     return (
-        os.environ.get("AIzaSyDnPgWAr07vZ84orhgaLGoJq140XGTrJr0", "").strip()
-        or os.environ.get("AIzaSyDnPgWAr07vZ84orhgaLGoJq140XGTrJr0", "").strip()
+        os.environ.get("RENDER_GEMINI_KEY", "").strip()
+        or os.environ.get("GEMINI_API_KEY", "").strip()
     )
 
 
@@ -286,16 +294,14 @@ def home():
 
 @app.route("/health", methods=["GET"])
 def health():
-    test_value = os.environ.get("RENDER_TEST_VALUE", "")
     raw_key = get_api_key()
     model_name = get_model_name()
 
     return jsonify({
         "status": "ok",
-        "render_test_value": test_value,
-        "render_test_length": len(test_value),
-        "env_has_render_test_value": "RENDER_TEST_VALUE" in os.environ,
+        "env_has_render_gemini_key_b64": "RENDER_GEMINI_KEY_B64" in os.environ,
         "env_has_render_gemini_key": "RENDER_GEMINI_KEY" in os.environ,
+        "env_has_gemini_key": "GEMINI_API_KEY" in os.environ,
         "env_has_gemini_model": "GEMINI_MODEL" in os.environ,
         "gemini_key_loaded": bool(raw_key),
         "key_length": len(raw_key),
