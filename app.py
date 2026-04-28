@@ -27,14 +27,10 @@ CORS(app, origins="*")
 # -----------------------------
 load_dotenv()
 
-# TEMPORARY DEBUG: hardcode the key here
-api_key = "AIzaSyAi8NqSEQL1wJBoke4n1AXNxBqldwYugUs"
-
-# model can still come from env, or default
+api_key = os.environ.get("AIzaSyBkHRg2FaOalunpfompukjilbyRhhsotww", "").strip()
 model_name = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash").strip()
 
-print("DEBUG hardcoded key loaded:", "FOUND" if api_key else "NOT FOUND")
-print("API key preview:", (api_key[:6] + "...") if api_key else "NONE")
+print("Loaded Gemini key:", "FOUND" if api_key else "NOT FOUND")
 print("Model:", model_name)
 
 if api_key:
@@ -112,13 +108,33 @@ def is_quota_error(error_text: str) -> bool:
         or "resource_exhausted" in lower
         or "quota" in lower
         or "free_tier_requests" in lower
-        or "api_key_invalid" in lower
     )
 
 
 def is_temporary_error(error_text: str) -> bool:
     lower = error_text.lower()
     return "503" in error_text or "unavailable" in lower
+
+
+def is_leaked_key_error(error_text: str) -> bool:
+    lower = error_text.lower()
+    return (
+        "403" in error_text
+        and (
+            "leaked" in lower
+            or "reported as leaked" in lower
+            or "api_key_service_blocked" in lower
+        )
+    )
+
+
+def is_invalid_key_error(error_text: str) -> bool:
+    lower = error_text.lower()
+    return (
+        "api_key_invalid" in lower
+        or "api key not valid" in lower
+        or "api_key_service_blocked" in lower
+    )
 
 
 def call_gemini_with_retry(model, prompt, img):
@@ -258,8 +274,7 @@ def health():
     return jsonify({
         "status": "ok",
         "gemini_key_loaded": bool(api_key),
-        "model": model_name,
-        "key_preview": (api_key[:6] + "...") if api_key else "NONE"
+        "model": model_name
     })
 
 
@@ -474,6 +489,16 @@ Rules:
         error_text = str(e)
         print("Analyze error:", error_text)
 
+        if is_leaked_key_error(error_text):
+            return jsonify({
+                "error": "Gemini API key was blocked as leaked. Create a new key and keep it only in Render environment variables."
+            }), 403
+
+        if is_invalid_key_error(error_text):
+            return jsonify({
+                "error": "Gemini API key is invalid. Add a fresh key in Render environment variables."
+            }), 403
+
         if is_quota_error(error_text):
             return jsonify(
                 build_fallback_valid_response(
@@ -532,6 +557,16 @@ Keep it to 3-5 lines max.
     except Exception as e:
         error_text = str(e)
         print("Ask error:", error_text)
+
+        if is_leaked_key_error(error_text):
+            return jsonify({
+                "error": "Gemini API key was blocked as leaked. Create a new key and keep it only in Render environment variables."
+            }), 403
+
+        if is_invalid_key_error(error_text):
+            return jsonify({
+                "error": "Gemini API key is invalid. Add a fresh key in Render environment variables."
+            }), 403
 
         if is_quota_error(error_text) or is_temporary_error(error_text):
             return jsonify({
