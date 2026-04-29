@@ -286,23 +286,27 @@ def home():
 
 @app.route("/health", methods=["GET"])
 def health():
-    raw_key = get_api_key()
-    model_name = get_model_name()
     raw_hex = os.environ.get("RENDER_GEMINI_KEY_HEX", "")
+    decoded = ""
+    decode_error = ""
+
+    try:
+        if raw_hex.strip():
+            decoded = bytes.fromhex(raw_hex.strip()).decode("utf-8")
+    except Exception as e:
+        decode_error = str(e)
 
     return jsonify({
         "status": "ok",
+        "health_version": "HEX_DEBUG_V2",
         "env_has_render_gemini_key_hex": "RENDER_GEMINI_KEY_HEX" in os.environ,
-        "env_has_render_gemini_key": "RENDER_GEMINI_KEY" in os.environ,
-        "env_has_gemini_key": "GEMINI_API_KEY" in os.environ,
-        "env_has_gemini_model": "GEMINI_MODEL" in os.environ,
-        "hex_length": len(raw_hex),
-        "gemini_key_loaded": bool(raw_key),
-        "key_length": len(raw_key),
-        "key_preview": (raw_key[:6] + "...") if raw_key else "NONE",
-        "model": model_name
+        "raw_hex_length": len(raw_hex),
+        "raw_hex_preview": raw_hex[:20],
+        "decoded_preview": decoded[:20] if decoded else "NONE",
+        "decoded_length": len(decoded),
+        "decode_error": decode_error or "NONE",
+        "model": os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
     })
-
 
 @app.route("/analyze", methods=["POST"])
 def analyze():
