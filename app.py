@@ -21,7 +21,6 @@ ALLOWED_EXTENSIONS = {"png", "jpg", "jpeg", "webp", "heic", "heif"}
 app = Flask(__name__)
 CORS(app, origins="*")
 
-# Temporary in-memory session storage
 sessions = {}
 
 
@@ -54,7 +53,12 @@ def build_model():
         return None, api_key, model_name
 
     genai.configure(api_key=api_key)
-    model = genai.GenerativeModel(model_name)
+    model = genai.GenerativeModel(
+        model_name,
+        generation_config={
+            "temperature": 0.2
+        }
+    )
     return model, api_key, model_name
 
 
@@ -63,26 +67,41 @@ print("Model:", get_model_name())
 
 
 # -----------------------------
-# Helpers
+# Utility helpers
 # -----------------------------
 def allowed_file(filename: str) -> bool:
     return "." in filename and filename.rsplit(".", 1)[1].lower() in ALLOWED_EXTENSIONS
 
 
-def clean_json_response(text: str) -> str:
+def extract_json_block(text: str) -> str:
+    if not text:
+        return ""
+
     text = text.strip()
+
     if text.startswith("```"):
         lines = text.splitlines()
         if len(lines) >= 3:
             text = "\n".join(lines[1:-1]).strip()
+
+    first_brace = text.find("{")
+    last_brace = text.rfind("}")
+
+    if first_brace != -1 and last_brace != -1 and last_brace > first_brace:
+        return text[first_brace:last_brace + 1]
+
     return text
+
+
+def parse_json_response(text: str):
+    cleaned = extract_json_block(text)
+    return json.loads(cleaned)
 
 
 def ensure_list(value, fallback=None):
     if isinstance(value, list):
-        cleaned = [str(x).strip() for x in value if str(x).strip()]
-        if cleaned:
-            return cleaned
+        result = [str(x).strip() for x in value if str(x).strip()]
+        return result if result else (fallback or [])
     if isinstance(value, str) and value.strip():
         return [value.strip()]
     return fallback or []
@@ -93,7 +112,7 @@ def ensure_learning_cards(cards):
         return []
 
     cleaned = []
-    allowed_colors = {"cream", "green", "blue", "amber", "mint"}
+    allowed_colors = {"cream", "green", "blue"}
 
     for card in cards:
         if not isinstance(card, dict):
@@ -101,7 +120,7 @@ def ensure_learning_cards(cards):
 
         title = str(card.get("title", "")).strip()
         description = str(card.get("description", "")).strip()
-        color = str(card.get("color", card.get("theme", "cream"))).strip().lower()
+        color = str(card.get("color", "cream")).strip().lower()
 
         if not title or not description:
             continue
@@ -109,18 +128,13 @@ def ensure_learning_cards(cards):
         if color not in allowed_colors:
             color = "cream"
 
-        if color == "amber":
-            color = "cream"
-        if color == "mint":
-            color = "green"
-
         cleaned.append({
             "title": title,
             "description": description,
             "color": color
         })
 
-    return cleaned
+    return cleaned[:3]
 
 
 def is_quota_error(error_text: str) -> bool:
@@ -159,46 +173,39 @@ def is_invalid_key_error(error_text: str) -> bool:
     )
 
 
-def call_gemini_with_retry(model, prompt, img):
-    try:
-        return model.generate_content([prompt, img])
-    except Exception as e:
-        error_text = str(e)
-
-        if is_temporary_error(error_text):
-            print("Gemini temporarily unavailable. Retrying in 3 seconds...")
-            time.sleep(3)
-            return model.generate_content([prompt, img])
-
-        raise
+def call_gemini(model, parts):
+    return model.generate_content(parts)
 
 
-def build_invalid_photo_response(age, reason="We could not clearly identify a Troy block creation in this image."):
+# -----------------------------
+# Response builders
+# -----------------------------
+def build_invalid_photo_response(age, reason, noticed=None, suggestions=None, ideas=None):
     session_id = str(uuid.uuid4())
 
     result = {
         "status": "success",
         "imageStatus": "invalid",
         "buildGuess": {
-            "title": "Not enough Troy blocks detected",
-            "subtitle": "We could not clearly identify a Troy block creation in this image."
+            "title": "We couldn’t clearly analyze this image",
+            "subtitle": reason
         },
         "whatWeFound": {
             "title": "What we found",
             "summary": reason
         },
         "whatTheyLearned": [],
-        "whatWeNoticed": [
-            "Not enough visible Troy blocks were detected",
-            "The structure may be too far, unclear, cropped, or unrelated to Troy blocks",
-            "A clearer photo will help us give better feedback"
+        "whatWeNoticed": noticed or [
+            "The image does not clearly show enough visible Troy blocks",
+            "The structure may be blurry, cropped, too far away, or unrelated to Troy blocks",
+            "A clearer photo will help us give the right feedback"
         ],
-        "suggestionsForParent": [
+        "suggestionsForParent": suggestions or [
             "Retake the photo with the full structure visible",
-            "Use a cleaner background if possible",
-            "Try again with better lighting"
+            "Use better lighting and a cleaner background",
+            "Make sure the Troy block build is the main focus of the image"
         ],
-        "nextBuildIdeas": [
+        "nextBuildIdeas": ideas or [
             "Build a tower",
             "Build a bridge",
             "Build a small house"
@@ -206,78 +213,107 @@ def build_invalid_photo_response(age, reason="We could not clearly identify a Tr
         "session_id": session_id
     }
 
-    sessions[session_id] = {
-        "age": age,
-        "imageStatus": "invalid",
-        "buildGuess": result["buildGuess"],
-        "whatWeFound": result["whatWeFound"],
-        "whatTheyLearned": result["whatTheyLearned"],
-        "whatWeNoticed": result["whatWeNoticed"],
-        "suggestionsForParent": result["suggestionsForParent"],
-        "nextBuildIdeas": result["nextBuildIdeas"]
-    }
-
+    sessions[session_id] = result
     return result
 
 
-def build_fallback_valid_response(age, note_text="Live AI feedback is temporarily unavailable, so a fallback result was used."):
-    session_id = str(uuid.uuid4())
+def build_service_retry_response():
+    return jsonify({
+        "error": "The AI analysis is temporarily unavailable. Please try again in a moment."
+    }), 503
 
-    result = {
-        "status": "success",
-        "imageStatus": "valid",
-        "buildGuess": {
-            "title": "Creative Troy block build",
-            "subtitle": "Your little one just built a thoughtful Troy structure and explored how pieces work together!"
-        },
-        "whatWeFound": {
-            "title": "What we found",
-            "summary": "This looks like a meaningful Troy block structure with balance, imagination, and careful placement."
-        },
-        "whatTheyLearned": [
-            {
-                "title": "Balance & Gravity",
-                "description": "They explored how support underneath helps the structure stay stable.",
-                "color": "cream"
-            },
-            {
-                "title": "Spatial Awareness",
-                "description": "They practiced understanding shape, size, and placement in space.",
-                "color": "green"
-            },
-            {
-                "title": "Patience & Focus",
-                "description": "Careful placement helped build concentration and control.",
-                "color": "blue"
-            }
-        ],
-        "whatWeNoticed": [],
-        "suggestionsForParent": [
-            "Ask your child to explain what they built",
-            "Encourage them to rebuild it taller or wider",
-            "Try making a stronger version together"
-        ],
-        "nextBuildIdeas": [
-            "Build a bridge",
-            "Build a tower",
-            "Build a small castle"
-        ],
-        "note": note_text,
-        "session_id": session_id
-    }
 
-    sessions[session_id] = {
-        "age": age,
-        "imageStatus": "valid",
-        "buildGuess": result["buildGuess"],
-        "whatWeFound": result["whatWeFound"],
-        "whatTheyLearned": result["whatTheyLearned"],
-        "whatWeNoticed": result["whatWeNoticed"],
-        "suggestionsForParent": result["suggestionsForParent"],
-        "nextBuildIdeas": result["nextBuildIdeas"]
-    }
+# -----------------------------
+# Strict image classification
+# -----------------------------
+def classify_troy_image(model, img):
+    prompt = """
+You are checking whether an image can be analyzed as a Troy wooden blocks build.
 
-    return result
+Return ONLY valid JSON in exactly this format:
+{
+  "isTroyBuild": true,
+  "isImageClear": true,
+  "enoughBlocksVisible": true,
+  "visibleBlockCountEstimate": 10,
+  "confidence": 0.92,
+  "reason": "short reason"
+}
+
+Rules:
+- isTroyBuild = true only if the image clearly shows a Troy wooden block build or structure
+- If the image is random, unrelated, mostly a person, mostly background, toys other than Troy blocks, or not a wooden block build, set isTroyBuild = false
+- isImageClear = false if the image is blurry, too dark, too cropped, too far away, or unclear
+- enoughBlocksVisible = false if there are too few visible blocks to analyze meaningfully
+- visibleBlockCountEstimate should be an integer estimate
+- confidence must be between 0 and 1
+- reason should be short and practical
+- Output JSON only
+"""
+    response = call_gemini(model, [prompt, img])
+    return parse_json_response(response.text)
+
+
+# -----------------------------
+# Main analysis
+# -----------------------------
+def analyze_troy_build(model, img, age):
+    prompt = f"""
+You are analyzing a child's building made with Troy wooden blocks.
+
+The child age is: {age if age else "unknown"}.
+
+Return ONLY valid JSON in exactly this format:
+{{
+  "status": "success",
+  "imageStatus": "valid",
+  "buildGuess": {{
+    "title": "short guessed build name",
+    "subtitle": "one short sentence describing what the child likely built"
+  }},
+  "whatWeFound": {{
+    "title": "What we found",
+    "summary": "1 to 2 short sentences"
+  }},
+  "whatTheyLearned": [
+    {{
+      "title": "skill name",
+      "description": "short description",
+      "color": "cream"
+    }},
+    {{
+      "title": "skill name",
+      "description": "short description",
+      "color": "green"
+    }},
+    {{
+      "title": "skill name",
+      "description": "short description",
+      "color": "blue"
+    }}
+  ],
+  "whatWeNoticed": [],
+  "suggestionsForParent": [
+    "short suggestion 1",
+    "short suggestion 2",
+    "short suggestion 3"
+  ],
+  "nextBuildIdeas": [
+    "short idea 1",
+    "short idea 2",
+    "short idea 3"
+  ]
+}}
+
+Rules:
+- Guess the structure from what is visible
+- Keep the language simple and parent-friendly
+- Do not use long paragraphs
+- Do not include markdown
+- Do not include any extra explanation outside JSON
+"""
+    response = call_gemini(model, [prompt, img])
+    return parse_json_response(response.text)
 
 
 # -----------------------------
@@ -294,9 +330,7 @@ def home():
 @app.route("/health", methods=["GET"])
 def health():
     raw_key = get_api_key()
-    model_name = get_model_name()
     raw_hex = os.environ.get("RENDER_GEMINI_KEY_HEX", "")
-
     return jsonify({
         "status": "ok",
         "env_has_render_gemini_key_hex": "RENDER_GEMINI_KEY_HEX" in os.environ,
@@ -307,18 +341,19 @@ def health():
         "gemini_key_loaded": bool(raw_key),
         "key_length": len(raw_key),
         "key_preview": (raw_key[:6] + "...") if raw_key else "NONE",
-        "model": model_name
+        "model": get_model_name()
     })
 
 
 @app.route("/analyze", methods=["POST"])
 def analyze():
+    age = request.form.get("age", "").strip()
+
     try:
         if "image" not in request.files:
             return jsonify({"error": "No image file uploaded"}), 400
 
         image_file = request.files["image"]
-        age = request.form.get("age", "").strip()
 
         if image_file.filename == "":
             return jsonify({"error": "No selected file"}), 400
@@ -343,181 +378,110 @@ def analyze():
                 "error": "Could not open this image. Please try JPG, PNG, or WEBP."
             }), 400
 
-        prompt = f"""
-You are analyzing a child's building made with Troy wooden blocks.
+        # First: strict validation
+        classification = classify_troy_image(model, img)
 
-The child age is: {age if age else "unknown"}.
+        is_troy = bool(classification.get("isTroyBuild", False))
+        is_clear = bool(classification.get("isImageClear", False))
+        enough_blocks = bool(classification.get("enoughBlocksVisible", False))
+        visible_count = int(classification.get("visibleBlockCountEstimate", 0) or 0)
+        confidence = float(classification.get("confidence", 0) or 0)
+        reason = str(classification.get("reason", "")).strip() or "We could not clearly analyze this image."
 
-IMPORTANT:
-- Output must be simple, warm, readable, and exciting for parents.
-- Do not produce long paragraphs.
-- Do not include a celebration section.
-- Do not include any ask/chat section.
-- First try to GUESS what the child built.
-- If the image is random, unclear, unrelated, or does not show enough visible Troy blocks, mark it as invalid.
-- If invalid, clearly say there are not enough Troy blocks visible for analysis.
-- Never overclaim. If unsure, say "looks like" or "appears to be".
+        if not is_troy:
+            return jsonify(build_invalid_photo_response(
+                age,
+                "This image does not appear to show a Troy blocks build.",
+                noticed=[
+                    "The image does not look like a Troy wooden blocks structure",
+                    "The main subject may be unrelated to Troy blocks",
+                    "Please upload a clear Troy block build image"
+                ],
+                suggestions=[
+                    "Upload a photo where the Troy block structure is clearly visible",
+                    "Make sure the build is the main subject of the image",
+                    "Try again with a proper Troy blocks construction photo"
+                ]
+            )), 200
 
-Return ONLY valid JSON with EXACTLY one of these 2 structures:
+        if not is_clear:
+            return jsonify(build_invalid_photo_response(
+                age,
+                "The image is too unclear to analyze properly. Please try again with a clearer photo.",
+                noticed=[
+                    "The image appears blurry, cropped, dark, or unclear",
+                    "The structure is not visible enough for proper analysis",
+                    "We need a clearer view of the Troy build"
+                ],
+                suggestions=[
+                    "Retake the photo with better lighting",
+                    "Make sure the whole structure is visible",
+                    "Move closer and keep the image steady"
+                ]
+            )), 200
 
-1) If image is VALID and enough Troy blocks are visible:
-{{
-  "status": "success",
-  "imageStatus": "valid",
-  "buildGuess": {{
-    "title": "short guessed build name",
-    "subtitle": "one short sentence for parents about what the child likely built"
-  }},
-  "whatWeFound": {{
-    "title": "What we found",
-    "summary": "1 to 2 short sentences"
-  }},
-  "whatTheyLearned": [
-    {{
-      "title": "skill name",
-      "description": "short description",
-      "color": "cream"
-    }},
-    {{
-      "title": "skill name",
-      "description": "short description",
-      "color": "green"
-    }},
-    {{
-      "title": "skill name",
-      "description": "short description",
-      "color": "blue"
-    }}
-  ],
-  "suggestionsForParent": [
-    "short suggestion 1",
-    "short suggestion 2",
-    "short suggestion 3"
-  ],
-  "nextBuildIdeas": [
-    "short idea 1",
-    "short idea 2",
-    "short idea 3"
-  ]
-}}
+        if not enough_blocks or visible_count < 4 or confidence < 0.65:
+            return jsonify(build_invalid_photo_response(
+                age,
+                "Not enough Troy blocks are visible to analyze this build confidently.",
+                noticed=[
+                    "Too few blocks are visible in the image",
+                    "The build may be too small, too cropped, or partially hidden",
+                    "We need a fuller view of the structure"
+                ],
+                suggestions=[
+                    "Retake the photo showing more of the build",
+                    "Capture the full structure from a little farther back",
+                    "Make sure the block arrangement is fully visible"
+                ]
+            )), 200
 
-2) If image is INVALID / random / unclear / unrelated / not enough Troy blocks:
-{{
-  "status": "success",
-  "imageStatus": "invalid",
-  "buildGuess": {{
-    "title": "Not enough Troy blocks detected",
-    "subtitle": "We could not clearly identify a Troy block creation in this image."
-  }},
-  "whatWeFound": {{
-    "title": "What we found",
-    "summary": "The photo does not show enough visible Troy blocks for a proper analysis."
-  }},
-  "whatWeNoticed": [
-    "short point 1",
-    "short point 2",
-    "short point 3"
-  ],
-  "suggestionsForParent": [
-    "short suggestion 1",
-    "short suggestion 2",
-    "short suggestion 3"
-  ],
-  "nextBuildIdeas": [
-    "short idea 1",
-    "short idea 2",
-    "short idea 3"
-  ]
-}}
+        # Second: full analysis only if valid
+        parsed = analyze_troy_build(model, img, age)
 
-Rules:
-- Output only JSON
-- No markdown
-- No explanation outside JSON
-- Keep language parent-friendly
-"""
+        cards = ensure_learning_cards(parsed.get("whatTheyLearned"))
+        if len(cards) < 3:
+            return jsonify(build_invalid_photo_response(
+                age,
+                "We could not confidently analyze this photo. Please try again with a clearer Troy block build image."
+            )), 200
 
-        response = call_gemini_with_retry(model, prompt, img)
+        session_id = str(uuid.uuid4())
 
-        raw_text = response.text.strip()
-        cleaned = clean_json_response(raw_text)
-        print("Gemini raw output:", cleaned)
+        result = {
+            "status": "success",
+            "imageStatus": "valid",
+            "buildGuess": {
+                "title": str(parsed.get("buildGuess", {}).get("title", "Creative Troy block build")).strip(),
+                "subtitle": str(parsed.get("buildGuess", {}).get("subtitle", "Your little one created a thoughtful Troy block structure!")).strip()
+            },
+            "whatWeFound": {
+                "title": "What we found",
+                "summary": str(parsed.get("whatWeFound", {}).get("summary", "This looks like a meaningful Troy block build.")).strip()
+            },
+            "whatTheyLearned": cards,
+            "whatWeNoticed": ensure_list(parsed.get("whatWeNoticed"), []),
+            "suggestionsForParent": ensure_list(
+                parsed.get("suggestionsForParent"),
+                [
+                    "Ask your child to explain what they built",
+                    "Encourage them to rebuild it taller or wider",
+                    "Try making a stronger version together"
+                ]
+            ),
+            "nextBuildIdeas": ensure_list(
+                parsed.get("nextBuildIdeas"),
+                [
+                    "Build a bridge",
+                    "Build a tower",
+                    "Build a small castle"
+                ]
+            ),
+            "session_id": session_id
+        }
 
-        try:
-            parsed = json.loads(cleaned)
-        except Exception:
-            return jsonify(
-                build_fallback_valid_response(
-                    age,
-                    "AI response could not be read properly, so a fallback result was used."
-                )
-            ), 200
-
-        if parsed.get("imageStatus") == "invalid":
-            reason = (
-                parsed.get("whatWeFound", {}).get("summary")
-                or "We could not clearly identify enough Troy blocks in the photo."
-            )
-            return jsonify(build_invalid_photo_response(age, reason)), 200
-
-        if parsed.get("imageStatus") == "valid":
-            cards = ensure_learning_cards(parsed.get("whatTheyLearned"))
-            if len(cards) < 3:
-                return jsonify(
-                    build_fallback_valid_response(
-                        age,
-                        "AI returned incomplete learning cards, so a fallback result was used."
-                    )
-                ), 200
-
-            session_id = str(uuid.uuid4())
-
-            result = {
-                "status": "success",
-                "imageStatus": "valid",
-                "buildGuess": {
-                    "title": str(parsed.get("buildGuess", {}).get("title", "Creative Troy block build")).strip(),
-                    "subtitle": str(parsed.get("buildGuess", {}).get("subtitle", "Your little one just built a creative Troy structure!")).strip()
-                },
-                "whatWeFound": {
-                    "title": "What we found",
-                    "summary": str(parsed.get("whatWeFound", {}).get("summary", "This looks like a thoughtful Troy block structure.")).strip()
-                },
-                "whatTheyLearned": cards[:3],
-                "whatWeNoticed": [],
-                "suggestionsForParent": ensure_list(
-                    parsed.get("suggestionsForParent"),
-                    [
-                        "Ask your child to explain what they built",
-                        "Encourage them to rebuild it taller or wider",
-                        "Try making a stronger version together"
-                    ]
-                ),
-                "nextBuildIdeas": ensure_list(
-                    parsed.get("nextBuildIdeas"),
-                    [
-                        "Build a bridge",
-                        "Build a tower",
-                        "Build a small castle"
-                    ]
-                ),
-                "session_id": session_id
-            }
-
-            sessions[session_id] = {
-                "age": age,
-                "imageStatus": "valid",
-                "buildGuess": result["buildGuess"],
-                "whatWeFound": result["whatWeFound"],
-                "whatTheyLearned": result["whatTheyLearned"],
-                "whatWeNoticed": result["whatWeNoticed"],
-                "suggestionsForParent": result["suggestionsForParent"],
-                "nextBuildIdeas": result["nextBuildIdeas"]
-            }
-
-            return jsonify(result), 200
-
-        return jsonify(build_invalid_photo_response(age)), 200
+        sessions[session_id] = result
+        return jsonify(result), 200
 
     except Exception as e:
         error_text = str(e)
@@ -533,21 +497,8 @@ Rules:
                 "error": "Gemini API key is invalid. Add a fresh key in Render environment variables."
             }), 403
 
-        if is_quota_error(error_text):
-            return jsonify(
-                build_fallback_valid_response(
-                    request.form.get("age", "").strip(),
-                    "Live AI feedback is temporarily unavailable because the Gemini quota has been reached, so a fallback result was used."
-                )
-            ), 200
-
-        if is_temporary_error(error_text):
-            return jsonify(
-                build_fallback_valid_response(
-                    request.form.get("age", "").strip(),
-                    "Live AI feedback is temporarily unavailable, so a fallback result was used."
-                )
-            ), 200
+        if is_quota_error(error_text) or is_temporary_error(error_text):
+            return build_service_retry_response()
 
         return jsonify({
             "error": "Something went wrong",
@@ -559,8 +510,8 @@ Rules:
 def ask():
     try:
         data = request.get_json()
-        question = data.get("question", "").strip()
-        summary = data.get("summary", "").strip()
+        question = str(data.get("question", "")).strip()
+        summary = str(data.get("summary", "")).strip()
 
         if not question:
             return jsonify({"error": "Question is required"}), 400
@@ -580,7 +531,7 @@ Parent question:
 {question}
 
 Answer in a short, warm, simple way for a parent.
-Keep it to 3-5 lines max.
+Keep it to 3 to 5 short lines.
 """
 
         response = model.generate_content(prompt)
