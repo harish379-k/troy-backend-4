@@ -2,7 +2,6 @@ import os
 import json
 import uuid
 import time
-import base64
 from pathlib import Path
 
 from flask import Flask, request, jsonify
@@ -10,9 +9,6 @@ from flask_cors import CORS
 from PIL import Image
 import google.generativeai as genai
 
-# -----------------------------
-# App setup
-# -----------------------------
 BASE_DIR = Path(__file__).resolve().parent
 UPLOAD_FOLDER = BASE_DIR / "uploads"
 UPLOAD_FOLDER.mkdir(exist_ok=True)
@@ -22,7 +18,6 @@ ALLOWED_EXTENSIONS = {"png", "jpg", "jpeg", "webp", "heic", "heif"}
 app = Flask(__name__)
 CORS(app, origins="*")
 
-# Temporary in-memory session storage
 sessions = {}
 
 
@@ -30,12 +25,12 @@ sessions = {}
 # Gemini config helpers
 # -----------------------------
 def get_api_key():
-    b64_key = os.environ.get("QUl6YVN5Q2ZiQmhETF9LXzFiamdwWEV1MEU4VnIxVmFkMlFMdGdN", "").strip()
-    if b64_key:
+    hex_key = os.environ.get("41497a6153794366624268444c5f4b5f31626a677058457530453856723156616432514c74674d", "").strip()
+    if hex_key:
         try:
-            return base64.b64decode(b64_key).decode("utf-8").strip()
+            return bytes.fromhex(hex_key).decode("utf-8").strip()
         except Exception as e:
-            print("Failed to decode RENDER_GEMINI_KEY_B64:", e)
+            print("Failed to decode RENDER_GEMINI_KEY_HEX:", e)
 
     return (
         os.environ.get("RENDER_GEMINI_KEY", "").strip()
@@ -281,9 +276,6 @@ def build_fallback_valid_response(age, note_text="Live AI feedback is temporaril
     return result
 
 
-# -----------------------------
-# Routes
-# -----------------------------
 @app.route("/", methods=["GET"])
 def home():
     return jsonify({
@@ -296,13 +288,15 @@ def home():
 def health():
     raw_key = get_api_key()
     model_name = get_model_name()
+    raw_hex = os.environ.get("RENDER_GEMINI_KEY_HEX", "")
 
     return jsonify({
         "status": "ok",
-        "env_has_render_gemini_key_b64": "RENDER_GEMINI_KEY_B64" in os.environ,
+        "env_has_render_gemini_key_hex": "RENDER_GEMINI_KEY_HEX" in os.environ,
         "env_has_render_gemini_key": "RENDER_GEMINI_KEY" in os.environ,
         "env_has_gemini_key": "GEMINI_API_KEY" in os.environ,
         "env_has_gemini_model": "GEMINI_MODEL" in os.environ,
+        "hex_length": len(raw_hex),
         "gemini_key_loaded": bool(raw_key),
         "key_length": len(raw_key),
         "key_preview": (raw_key[:6] + "...") if raw_key else "NONE",
