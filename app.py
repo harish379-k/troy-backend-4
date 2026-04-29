@@ -9,6 +9,9 @@ from flask_cors import CORS
 from PIL import Image
 import google.generativeai as genai
 
+# -----------------------------
+# App setup
+# -----------------------------
 BASE_DIR = Path(__file__).resolve().parent
 UPLOAD_FOLDER = BASE_DIR / "uploads"
 UPLOAD_FOLDER.mkdir(exist_ok=True)
@@ -18,6 +21,7 @@ ALLOWED_EXTENSIONS = {"png", "jpg", "jpeg", "webp", "heic", "heif"}
 app = Flask(__name__)
 CORS(app, origins="*")
 
+# Temporary in-memory session storage
 sessions = {}
 
 
@@ -25,7 +29,7 @@ sessions = {}
 # Gemini config helpers
 # -----------------------------
 def get_api_key():
-    hex_key = os.environ.get("41497a6153794366624268444c5f4b5f31626a677058457530453856723156616432514c74674d", "").strip()
+    hex_key = os.environ.get("RENDER_GEMINI_KEY_HEX", "").strip()
     if hex_key:
         try:
             return bytes.fromhex(hex_key).decode("utf-8").strip()
@@ -276,6 +280,9 @@ def build_fallback_valid_response(age, note_text="Live AI feedback is temporaril
     return result
 
 
+# -----------------------------
+# Routes
+# -----------------------------
 @app.route("/", methods=["GET"])
 def home():
     return jsonify({
@@ -286,27 +293,23 @@ def home():
 
 @app.route("/health", methods=["GET"])
 def health():
+    raw_key = get_api_key()
+    model_name = get_model_name()
     raw_hex = os.environ.get("RENDER_GEMINI_KEY_HEX", "")
-    decoded = ""
-    decode_error = ""
-
-    try:
-        if raw_hex.strip():
-            decoded = bytes.fromhex(raw_hex.strip()).decode("utf-8")
-    except Exception as e:
-        decode_error = str(e)
 
     return jsonify({
         "status": "ok",
-        "health_version": "HEX_DEBUG_V2",
         "env_has_render_gemini_key_hex": "RENDER_GEMINI_KEY_HEX" in os.environ,
-        "raw_hex_length": len(raw_hex),
-        "raw_hex_preview": raw_hex[:20],
-        "decoded_preview": decoded[:20] if decoded else "NONE",
-        "decoded_length": len(decoded),
-        "decode_error": decode_error or "NONE",
-        "model": os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
+        "env_has_render_gemini_key": "RENDER_GEMINI_KEY" in os.environ,
+        "env_has_gemini_key": "GEMINI_API_KEY" in os.environ,
+        "env_has_gemini_model": "GEMINI_MODEL" in os.environ,
+        "hex_length": len(raw_hex),
+        "gemini_key_loaded": bool(raw_key),
+        "key_length": len(raw_key),
+        "key_preview": (raw_key[:6] + "...") if raw_key else "NONE",
+        "model": model_name
     })
+
 
 @app.route("/analyze", methods=["POST"])
 def analyze():
