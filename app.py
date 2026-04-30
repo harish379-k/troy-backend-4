@@ -25,16 +25,15 @@ CORS(app, origins="*")
 sessions = {}
 
 # -----------------------------
-# OpenRouter config helpers
+# OpenRouter config
 # -----------------------------
 def get_openrouter_key():
     return os.environ.get("OPENROUTER_API_KEY", "").strip()
 
 
 def get_openrouter_model():
-    # Free router automatically chooses a free model that supports the request.
-    # You can later replace this with a specific model if you want.
-    return os.environ.get("OPENROUTER_MODEL", "openrouter/free").strip()
+    # You can change this from Render env if needed
+    return os.environ.get("OPENROUTER_MODEL", "qwen/qwen2.5-vl-32b-instruct:free").strip()
 
 
 def get_site_url():
@@ -45,8 +44,52 @@ def get_site_name():
     return os.environ.get("OPENROUTER_SITE_NAME", "Troy AI Analyzer").strip()
 
 
+def openrouter_headers():
+    headers = {
+        "Authorization": f"Bearer {get_openrouter_key()}",
+        "Content-Type": "application/json",
+    }
+
+    site_url = get_site_url()
+    site_name = get_site_name()
+
+    if site_url:
+        headers["HTTP-Referer"] = site_url
+    if site_name:
+        headers["X-OpenRouter-Title"] = site_name
+
+    return headers
+
+
+# -----------------------------
+# Helpers
+# -----------------------------
 def allowed_file(filename: str) -> bool:
     return "." in filename and filename.rsplit(".", 1)[1].lower() in ALLOWED_EXTENSIONS
+
+
+def extract_json_block(text: str) -> str:
+    if not text:
+        return ""
+
+    text = text.strip()
+
+    if text.startswith("```"):
+        lines = text.splitlines()
+        if len(lines) >= 3:
+            text = "\n".join(lines[1:-1]).strip()
+
+    first_brace = text.find("{")
+    last_brace = text.rfind("}")
+
+    if first_brace != -1 and last_brace != -1 and last_brace > first_brace:
+        return text[first_brace:last_brace + 1]
+
+    return text
+
+
+def parse_json_response(text: str):
+    return json.loads(extract_json_block(text))
 
 
 def ensure_list(value, fallback=None):
@@ -88,30 +131,6 @@ def ensure_learning_cards(cards):
     return cleaned[:3]
 
 
-def extract_json_block(text: str) -> str:
-    if not text:
-        return ""
-
-    text = text.strip()
-
-    if text.startswith("```"):
-        lines = text.splitlines()
-        if len(lines) >= 3:
-            text = "\n".join(lines[1:-1]).strip()
-
-    first_brace = text.find("{")
-    last_brace = text.rfind("}")
-
-    if first_brace != -1 and last_brace != -1 and last_brace > first_brace:
-        return text[first_brace:last_brace + 1]
-
-    return text
-
-
-def parse_json_response(text: str):
-    return json.loads(extract_json_block(text))
-
-
 def image_to_data_url(path: Path) -> str:
     ext = path.suffix.lower()
     mime = "image/jpeg"
@@ -126,49 +145,35 @@ def image_to_data_url(path: Path) -> str:
     return f"data:{mime};base64,{encoded}"
 
 
-def openrouter_headers():
-    headers = {
-        "Authorization": f"Bearer {get_openrouter_key()}",
-        "Content-Type": "application/json",
-    }
-
-    site_url = get_site_url()
-    site_name = get_site_name()
-
-    if site_url:
-        headers["HTTP-Referer"] = site_url
-    if site_name:
-        headers["X-OpenRouter-Title"] = site_name
-
-    return headers
+def is_rate_limit_error(error_text: str) -> bool:
+    lower = error_text.lower()
+    return "429" in error_text or "rate limit" in lower or "quota" in lower
 
 
-def call_openrouter_once(prompt: str, image_data_url: str, max_retries: int = 3):
-    api_key = get_openrouter_key()
-    model = get_openrouter_model()
+def is_temporary_error(error_text: str) -> bool:
+    lower = error_text.lower()
+    return "503" in error_text or "temporarily unavailable" in lower or "upstream error" in lower
 
-    if not api_key:
-        raise RuntimeError("OPENROUTER_API_KEY not found")
 
-payload = {
-    "model": os.environ.get("OPENROUTER_MODEL", "PUT_A_SPECIFIC_VISION_MODEL_HERE"),
-    "messages": [
-        {
-            "role": "user",
-            "content": [
-                {"type": "text", "text": prompt},
-                {"type": "image_url", "image_url": {"url": image_data_url}},
-            ],
-        }
-    ],
-    "temperature": 0.2,
-    "max_tokens": 1200,
-    "provider": {
-        "ignore": ["nvidia"],
-        "require_parameters": True
-    }
-}
+def extract_content_from_openrouter(data: dict) -> str:
+    content = data["choices"][0]["message"]["content"]
 
+    if isinstance(content, str):
+        return content.strip()
+
+    if isinstance(content, list):
+        parts = []
+        for part in content:
+            if isinstance(part, dict):
+                text = part.get("text", "")
+                if text:
+                    parts.append(text)
+        return "".join(parts).strip()
+
+    return str(content).strip()
+
+
+def call_openrouter(payload, max_retries=2):
     delay = 2
     last_error = None
 
@@ -182,7 +187,7 @@ payload = {
             )
 
             if response.status_code == 429:
-                last_error = f"429 quota/rate limit: {response.text}"
+                last_error = f"429: {response.text}"
                 if attempt < max_retries - 1:
                     time.sleep(delay)
                     delay *= 2
@@ -190,7 +195,7 @@ payload = {
                 raise RuntimeError(last_error)
 
             if response.status_code >= 500:
-                last_error = f"{response.status_code} upstream error: {response.text}"
+                last_error = f"{response.status_code}: {response.text}"
                 if attempt < max_retries - 1:
                     time.sleep(delay)
                     delay *= 2
@@ -200,16 +205,7 @@ payload = {
             if not response.ok:
                 raise RuntimeError(f"{response.status_code}: {response.text}")
 
-            data = response.json()
-            content = data["choices"][0]["message"]["content"]
-
-            if isinstance(content, list):
-                # Some providers may return content parts.
-                content = "".join(
-                    part.get("text", "") for part in content if isinstance(part, dict)
-                )
-
-            return str(content)
+            return response.json()
 
         except requests.RequestException as e:
             last_error = str(e)
@@ -222,6 +218,9 @@ payload = {
     raise RuntimeError(last_error or "OpenRouter request failed")
 
 
+# -----------------------------
+# Response builders
+# -----------------------------
 def build_invalid_photo_response(age, reason, noticed=None, suggestions=None, ideas=None):
     session_id = str(uuid.uuid4())
 
@@ -271,6 +270,9 @@ def build_service_retry_response():
     }), 503
 
 
+# -----------------------------
+# Single-call image analysis
+# -----------------------------
 def analyze_troy_image_once(image_data_url: str, age: str):
     prompt = f"""
 You are analyzing whether an uploaded image is a Troy wooden blocks build.
@@ -340,19 +342,19 @@ IF THE IMAGE IS UNCLEAR / BLURRY / CROPPED / TOO FEW BLOCKS VISIBLE:
   }},
   "whatTheyLearned": [],
   "whatWeNoticed": [
-    "short point 1",
-    "short point 2",
-    "short point 3"
+    "The image is not clear enough for analysis",
+    "The full block structure may not be visible",
+    "Please try again with a clearer Troy blocks photo"
   ],
   "suggestionsForParent": [
-    "short suggestion 1",
-    "short suggestion 2",
-    "short suggestion 3"
+    "Retake the photo with better lighting",
+    "Make sure the whole structure is visible",
+    "Move closer and keep the image steady"
   ],
   "nextBuildIdeas": [
-    "short idea 1",
-    "short idea 2",
-    "short idea 3"
+    "Build a tower",
+    "Build a bridge",
+    "Build a small house"
   ]
 }}
 
@@ -370,19 +372,19 @@ IF THE IMAGE IS NOT A TROY BLOCKS IMAGE / UNRELATED:
   }},
   "whatTheyLearned": [],
   "whatWeNoticed": [
-    "short point 1",
-    "short point 2",
-    "short point 3"
+    "The image does not look like a Troy wooden blocks build",
+    "The main subject appears unrelated to Troy blocks",
+    "Please upload a clear Troy block structure image"
   ],
   "suggestionsForParent": [
-    "short suggestion 1",
-    "short suggestion 2",
-    "short suggestion 3"
+    "Upload a photo where the Troy block structure is clearly visible",
+    "Make sure the build is the main subject of the image",
+    "Try again with a proper Troy blocks construction photo"
   ],
   "nextBuildIdeas": [
-    "short idea 1",
-    "short idea 2",
-    "short idea 3"
+    "Build a tower",
+    "Build a bridge",
+    "Build a small house"
   ]
 }}
 
@@ -396,10 +398,33 @@ Important rules:
 - No explanation outside JSON
 """
 
-    raw_text = call_openrouter_once(prompt, image_data_url)
+    payload = {
+        "model": get_openrouter_model(),
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": prompt},
+                    {"type": "image_url", "image_url": {"url": image_data_url}},
+                ],
+            }
+        ],
+        "temperature": 0.2,
+        "max_tokens": 1200,
+        "provider": {
+            "ignore": ["nvidia"],
+            "require_parameters": True
+        }
+    }
+
+    response_json = call_openrouter(payload)
+    raw_text = extract_content_from_openrouter(response_json)
     return parse_json_response(raw_text)
 
 
+# -----------------------------
+# Routes
+# -----------------------------
 @app.route("/", methods=["GET"])
 def home():
     return jsonify({
@@ -549,10 +574,10 @@ def analyze():
         error_text = str(e)
         print("Analyze error:", error_text)
 
-        if "429" in error_text:
+        if is_rate_limit_error(error_text):
             return build_rate_limit_response()
 
-        if "503" in error_text or "upstream error" in error_text.lower():
+        if is_temporary_error(error_text):
             return build_service_retry_response()
 
         if "OPENROUTER_API_KEY not found" in error_text:
@@ -590,9 +615,6 @@ Answer in a short, warm, simple way for a parent.
 Keep it to 3 to 5 short lines.
 """
 
-        raw_text = call_openrouter_once(prompt, "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADElEQVR42mP8/5+hHgAHggJ/PfVhNwAAAABJRU5ErkJggg==")
-        # The route above is image-oriented, so for /ask we call OpenRouter directly below instead.
-
         payload = {
             "model": get_openrouter_model(),
             "messages": [
@@ -600,40 +622,29 @@ Keep it to 3 to 5 short lines.
             ],
             "temperature": 0.2,
             "max_tokens": 400,
+            "provider": {
+                "ignore": ["nvidia"],
+                "require_parameters": True
+            }
         }
 
-        response = requests.post(
-            "https://openrouter.ai/api/v1/chat/completions",
-            headers=openrouter_headers(),
-            json=payload,
-            timeout=60,
-        )
-
-        if not response.ok:
-            raise RuntimeError(f"{response.status_code}: {response.text}")
-
-        data = response.json()
-        content = data["choices"][0]["message"]["content"]
-
-        if isinstance(content, list):
-            content = "".join(
-                part.get("text", "") for part in content if isinstance(part, dict)
-            )
+        response_json = call_openrouter(payload)
+        content = extract_content_from_openrouter(response_json)
 
         return jsonify({
-            "answer": str(content).strip()
+            "answer": content
         }), 200
 
     except Exception as e:
         error_text = str(e)
         print("Ask error:", error_text)
 
-        if "429" in error_text:
+        if is_rate_limit_error(error_text):
             return jsonify({
                 "answer": "AI usage limit reached right now. Please wait a minute and try again."
             }), 200
 
-        if "503" in error_text or "upstream error" in error_text.lower():
+        if is_temporary_error(error_text):
             return jsonify({
                 "answer": "Live AI Q&A is temporarily unavailable right now. Please try again later."
             }), 200
