@@ -18,47 +18,33 @@ UPLOAD_FOLDER = BASE_DIR / "uploads"
 UPLOAD_FOLDER.mkdir(exist_ok=True)
 
 ALLOWED_EXTENSIONS = {"png", "jpg", "jpeg", "webp"}
+MAX_BASE64_IMAGE_BYTES = 4 * 1024 * 1024  # Groq base64 image limit is 4MB
 
 app = Flask(__name__)
 CORS(app, origins="*")
 
 sessions = {}
 
+
 # -----------------------------
-# OpenRouter config
+# Groq config
 # -----------------------------
-def get_openrouter_key():
-    return os.environ.get("OPENROUTER_API_KEY", "").strip()
+def get_groq_key():
+    return os.environ.get("GROQ_API_KEY", "").strip()
 
 
-def get_openrouter_model():
-    # You can change this from Render env if needed
-    return os.environ.get("OPENROUTER_MODEL", "qwen/qwen2.5-vl-32b-instruct:free").strip()
+def get_groq_model():
+    return os.environ.get(
+        "GROQ_MODEL",
+        "meta-llama/llama-4-scout-17b-16e-instruct"
+    ).strip()
 
 
-def get_site_url():
-    return os.environ.get("OPENROUTER_SITE_URL", "").strip()
-
-
-def get_site_name():
-    return os.environ.get("OPENROUTER_SITE_NAME", "Troy AI Analyzer").strip()
-
-
-def openrouter_headers():
-    headers = {
-        "Authorization": f"Bearer {get_openrouter_key()}",
+def groq_headers():
+    return {
+        "Authorization": f"Bearer {get_groq_key()}",
         "Content-Type": "application/json",
     }
-
-    site_url = get_site_url()
-    site_name = get_site_name()
-
-    if site_url:
-        headers["HTTP-Referer"] = site_url
-    if site_name:
-        headers["X-OpenRouter-Title"] = site_name
-
-    return headers
 
 
 # -----------------------------
@@ -132,6 +118,10 @@ def ensure_learning_cards(cards):
 
 
 def image_to_data_url(path: Path) -> str:
+    file_size = path.stat().st_size
+    if file_size > MAX_BASE64_IMAGE_BYTES:
+        raise ValueError("Image is too large. Groq allows up to 4MB for base64 image uploads.")
+
     ext = path.suffix.lower()
     mime = "image/jpeg"
     if ext == ".png":
@@ -152,10 +142,10 @@ def is_rate_limit_error(error_text: str) -> bool:
 
 def is_temporary_error(error_text: str) -> bool:
     lower = error_text.lower()
-    return "503" in error_text or "temporarily unavailable" in lower or "upstream error" in lower
+    return "503" in error_text or "temporarily unavailable" in lower or "timeout" in lower
 
 
-def extract_content_from_openrouter(data: dict) -> str:
+def extract_content_from_groq(data: dict) -> str:
     content = data["choices"][0]["message"]["content"]
 
     if isinstance(content, str):
@@ -173,15 +163,15 @@ def extract_content_from_openrouter(data: dict) -> str:
     return str(content).strip()
 
 
-def call_openrouter(payload, max_retries=2):
+def call_groq(payload, max_retries=2):
     delay = 2
     last_error = None
 
     for attempt in range(max_retries):
         try:
             response = requests.post(
-                "https://openrouter.ai/api/v1/chat/completions",
-                headers=openrouter_headers(),
+                "https://api.groq.com/openai/v1/chat/completions",
+                headers=groq_headers(),
                 json=payload,
                 timeout=90,
             )
@@ -215,7 +205,7 @@ def call_openrouter(payload, max_retries=2):
                 continue
             raise RuntimeError(last_error)
 
-    raise RuntimeError(last_error or "OpenRouter request failed")
+    raise RuntimeError(last_error or "Groq request failed")
 
 
 # -----------------------------
@@ -399,7 +389,7 @@ Important rules:
 """
 
     payload = {
-        "model": get_openrouter_model(),
+        "model": get_groq_model(),
         "messages": [
             {
                 "role": "user",
@@ -410,15 +400,13 @@ Important rules:
             }
         ],
         "temperature": 0.2,
-        "max_tokens": 1200,
-        "provider": {
-            "ignore": ["nvidia"],
-            "require_parameters": True
-        }
+        "max_completion_tokens": 1200,
+        "top_p": 1,
+        "stream": False,
     }
 
-    response_json = call_openrouter(payload)
-    raw_text = extract_content_from_openrouter(response_json)
+    response_json = call_groq(payload)
+    raw_text = extract_content_from_groq(response_json)
     return parse_json_response(raw_text)
 
 
@@ -435,12 +423,12 @@ def home():
 
 @app.route("/health", methods=["GET"])
 def health():
-    raw_key = get_openrouter_key()
+    raw_key = get_groq_key()
     return jsonify({
         "status": "ok",
-        "openrouter_key_loaded": bool(raw_key),
+        "groq_key_loaded": bool(raw_key),
         "key_preview": (raw_key[:6] + "...") if raw_key else "NONE",
-        "model": get_openrouter_model()
+        "model": get_groq_model()
     })
 
 
@@ -460,8 +448,8 @@ def analyze():
         if not allowed_file(image_file.filename):
             return jsonify({"error": "Invalid file type. Use png, jpg, jpeg, or webp"}), 400
 
-        if not get_openrouter_key():
-            return jsonify({"error": "OPENROUTER_API_KEY not found"}), 500
+        if not get_groq_key():
+            return jsonify({"error": "GROQ_API_KEY not found"}), 500
 
         file_ext = image_file.filename.rsplit(".", 1)[1].lower()
         filename = f"{uuid.uuid4()}.{file_ext}"
@@ -570,6 +558,9 @@ def analyze():
 
         return jsonify(result), 200
 
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+
     except Exception as e:
         error_text = str(e)
         print("Analyze error:", error_text)
@@ -580,8 +571,8 @@ def analyze():
         if is_temporary_error(error_text):
             return build_service_retry_response()
 
-        if "OPENROUTER_API_KEY not found" in error_text:
-            return jsonify({"error": "OPENROUTER_API_KEY not found"}), 500
+        if "GROQ_API_KEY not found" in error_text:
+            return jsonify({"error": "GROQ_API_KEY not found"}), 500
 
         return jsonify({
             "error": "Something went wrong",
@@ -599,8 +590,8 @@ def ask():
         if not question:
             return jsonify({"error": "Question is required"}), 400
 
-        if not get_openrouter_key():
-            return jsonify({"error": "OPENROUTER_API_KEY not found"}), 500
+        if not get_groq_key():
+            return jsonify({"error": "GROQ_API_KEY not found"}), 500
 
         prompt = f"""
 You are helping a parent understand their child's Troy block build.
@@ -616,20 +607,18 @@ Keep it to 3 to 5 short lines.
 """
 
         payload = {
-            "model": get_openrouter_model(),
+            "model": get_groq_model(),
             "messages": [
                 {"role": "user", "content": prompt}
             ],
             "temperature": 0.2,
-            "max_tokens": 400,
-            "provider": {
-                "ignore": ["nvidia"],
-                "require_parameters": True
-            }
+            "max_completion_tokens": 400,
+            "top_p": 1,
+            "stream": False,
         }
 
-        response_json = call_openrouter(payload)
-        content = extract_content_from_openrouter(response_json)
+        response_json = call_groq(payload)
+        content = extract_content_from_groq(response_json)
 
         return jsonify({
             "answer": content
