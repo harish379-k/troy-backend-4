@@ -150,20 +150,24 @@ def call_openrouter_once(prompt: str, image_data_url: str, max_retries: int = 3)
     if not api_key:
         raise RuntimeError("OPENROUTER_API_KEY not found")
 
-    payload = {
-        "model": model,
-        "messages": [
-            {
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": prompt},
-                    {"type": "image_url", "image_url": {"url": image_data_url}},
-                ],
-            }
-        ],
-        "temperature": 0.2,
-        "max_tokens": 1200,
+payload = {
+    "model": os.environ.get("OPENROUTER_MODEL", "PUT_A_SPECIFIC_VISION_MODEL_HERE"),
+    "messages": [
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": prompt},
+                {"type": "image_url", "image_url": {"url": image_data_url}},
+            ],
+        }
+    ],
+    "temperature": 0.2,
+    "max_tokens": 1200,
+    "provider": {
+        "ignore": ["nvidia"],
+        "require_parameters": True
     }
+}
 
     delay = 2
     last_error = None
