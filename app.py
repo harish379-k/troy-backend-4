@@ -2,12 +2,13 @@ import os
 import json
 import uuid
 import time
+import base64
 from pathlib import Path
 
+import requests
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from PIL import Image
-import google.generativeai as genai
 
 # -----------------------------
 # App setup
@@ -16,86 +17,36 @@ BASE_DIR = Path(__file__).resolve().parent
 UPLOAD_FOLDER = BASE_DIR / "uploads"
 UPLOAD_FOLDER.mkdir(exist_ok=True)
 
-ALLOWED_EXTENSIONS = {"png", "jpg", "jpeg", "webp", "heic", "heif"}
+ALLOWED_EXTENSIONS = {"png", "jpg", "jpeg", "webp"}
 
 app = Flask(__name__)
 CORS(app, origins="*")
 
 sessions = {}
 
-
 # -----------------------------
-# Gemini config helpers
+# OpenRouter config helpers
 # -----------------------------
-def get_api_key():
-    hex_key = os.environ.get("RENDER_GEMINI_KEY_HEX", "").strip()
-    if hex_key:
-        try:
-            return bytes.fromhex(hex_key).decode("utf-8").strip()
-        except Exception as e:
-            print("Failed to decode RENDER_GEMINI_KEY_HEX:", e)
-
-    return (
-        os.environ.get("RENDER_GEMINI_KEY", "").strip()
-        or os.environ.get("GEMINI_API_KEY", "").strip()
-    )
+def get_openrouter_key():
+    return os.environ.get("OPENROUTER_API_KEY", "").strip()
 
 
-def get_model_name():
-    return os.environ.get("GEMINI_MODEL", "gemini-2.5-flash").strip()
+def get_openrouter_model():
+    # Free router automatically chooses a free model that supports the request.
+    # You can later replace this with a specific model if you want.
+    return os.environ.get("OPENROUTER_MODEL", "openrouter/free").strip()
 
 
-def build_model():
-    api_key = get_api_key()
-    model_name = get_model_name()
-
-    if not api_key:
-        return None, api_key, model_name
-
-    genai.configure(api_key=api_key)
-    model = genai.GenerativeModel(
-        model_name,
-        generation_config={
-            "temperature": 0.2
-        }
-    )
-    return model, api_key, model_name
+def get_site_url():
+    return os.environ.get("OPENROUTER_SITE_URL", "").strip()
 
 
-print("Loaded Gemini key:", "FOUND" if get_api_key() else "NOT FOUND")
-print("Model:", get_model_name())
+def get_site_name():
+    return os.environ.get("OPENROUTER_SITE_NAME", "Troy AI Analyzer").strip()
 
 
-# -----------------------------
-# Utility helpers
-# -----------------------------
 def allowed_file(filename: str) -> bool:
     return "." in filename and filename.rsplit(".", 1)[1].lower() in ALLOWED_EXTENSIONS
-
-
-def extract_json_block(text: str) -> str:
-    if not text:
-        return ""
-
-    text = text.strip()
-
-    if text.startswith("```"):
-        lines = text.splitlines()
-        if len(lines) >= 3:
-            text = "\n".join(lines[1:-1]).strip()
-
-    first_brace = text.find("{")
-    last_brace = text.rfind("}")
-
-    if first_brace != -1 and last_brace != -1 and last_brace > first_brace:
-        return text[first_brace:last_brace + 1]
-
-    return text
-
-
-def parse_json_response(text: str):
-    cleaned = extract_json_block(text)
-    return json.loads(cleaned)
 
 
 def ensure_list(value, fallback=None):
@@ -137,63 +88,136 @@ def ensure_learning_cards(cards):
     return cleaned[:3]
 
 
-def is_quota_error(error_text: str) -> bool:
-    lower = error_text.lower()
-    return (
-        "429" in error_text
-        or "resource_exhausted" in lower
-        or "quota" in lower
-        or "free_tier_requests" in lower
-    )
+def extract_json_block(text: str) -> str:
+    if not text:
+        return ""
+
+    text = text.strip()
+
+    if text.startswith("```"):
+        lines = text.splitlines()
+        if len(lines) >= 3:
+            text = "\n".join(lines[1:-1]).strip()
+
+    first_brace = text.find("{")
+    last_brace = text.rfind("}")
+
+    if first_brace != -1 and last_brace != -1 and last_brace > first_brace:
+        return text[first_brace:last_brace + 1]
+
+    return text
 
 
-def is_temporary_error(error_text: str) -> bool:
-    lower = error_text.lower()
-    return "503" in error_text or "unavailable" in lower
+def parse_json_response(text: str):
+    return json.loads(extract_json_block(text))
 
 
-def is_leaked_key_error(error_text: str) -> bool:
-    lower = error_text.lower()
-    return (
-        "403" in error_text
-        and (
-            "leaked" in lower
-            or "reported as leaked" in lower
-            or "api_key_service_blocked" in lower
-        )
-    )
+def image_to_data_url(path: Path) -> str:
+    ext = path.suffix.lower()
+    mime = "image/jpeg"
+    if ext == ".png":
+        mime = "image/png"
+    elif ext == ".webp":
+        mime = "image/webp"
+
+    with open(path, "rb") as f:
+        encoded = base64.b64encode(f.read()).decode("utf-8")
+
+    return f"data:{mime};base64,{encoded}"
 
 
-def is_invalid_key_error(error_text: str) -> bool:
-    lower = error_text.lower()
-    return (
-        "api_key_invalid" in lower
-        or "api key not valid" in lower
-        or "api_key_service_blocked" in lower
-    )
+def openrouter_headers():
+    headers = {
+        "Authorization": f"Bearer {get_openrouter_key()}",
+        "Content-Type": "application/json",
+    }
+
+    site_url = get_site_url()
+    site_name = get_site_name()
+
+    if site_url:
+        headers["HTTP-Referer"] = site_url
+    if site_name:
+        headers["X-OpenRouter-Title"] = site_name
+
+    return headers
 
 
-def call_gemini_with_retry(model, parts, max_retries=2):
+def call_openrouter_once(prompt: str, image_data_url: str, max_retries: int = 3):
+    api_key = get_openrouter_key()
+    model = get_openrouter_model()
+
+    if not api_key:
+        raise RuntimeError("OPENROUTER_API_KEY not found")
+
+    payload = {
+        "model": model,
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": prompt},
+                    {"type": "image_url", "image_url": {"url": image_data_url}},
+                ],
+            }
+        ],
+        "temperature": 0.2,
+        "max_tokens": 1200,
+    }
+
     delay = 2
+    last_error = None
 
     for attempt in range(max_retries):
         try:
-            return model.generate_content(parts)
-        except Exception as e:
-            error_text = str(e)
-            print(f"Gemini attempt {attempt + 1} failed:", error_text)
+            response = requests.post(
+                "https://openrouter.ai/api/v1/chat/completions",
+                headers=openrouter_headers(),
+                json=payload,
+                timeout=90,
+            )
 
-            if is_temporary_error(error_text) and attempt < max_retries - 1:
+            if response.status_code == 429:
+                last_error = f"429 quota/rate limit: {response.text}"
+                if attempt < max_retries - 1:
+                    time.sleep(delay)
+                    delay *= 2
+                    continue
+                raise RuntimeError(last_error)
+
+            if response.status_code >= 500:
+                last_error = f"{response.status_code} upstream error: {response.text}"
+                if attempt < max_retries - 1:
+                    time.sleep(delay)
+                    delay *= 2
+                    continue
+                raise RuntimeError(last_error)
+
+            if not response.ok:
+                raise RuntimeError(f"{response.status_code}: {response.text}")
+
+            data = response.json()
+            content = data["choices"][0]["message"]["content"]
+
+            if isinstance(content, list):
+                # Some providers may return content parts.
+                content = "".join(
+                    part.get("text", "") for part in content if isinstance(part, dict)
+                )
+
+            return str(content)
+
+        except requests.RequestException as e:
+            last_error = str(e)
+            if attempt < max_retries - 1:
                 time.sleep(delay)
                 delay *= 2
                 continue
+            raise RuntimeError(last_error)
 
-            raise
+    raise RuntimeError(last_error or "OpenRouter request failed")
 
 
-# -----------------------------
-# Response builders
-# -----------------------------
 def build_invalid_photo_response(age, reason, noticed=None, suggestions=None, ideas=None):
     session_id = str(uuid.uuid4())
 
@@ -243,10 +267,7 @@ def build_service_retry_response():
     }), 503
 
 
-# -----------------------------
-# Single-call image analysis
-# -----------------------------
-def analyze_troy_image_once(model, img, age):
+def analyze_troy_image_once(image_data_url: str, age: str):
     prompt = f"""
 You are analyzing whether an uploaded image is a Troy wooden blocks build.
 
@@ -371,13 +392,10 @@ Important rules:
 - No explanation outside JSON
 """
 
-    response = call_gemini_with_retry(model, [prompt, img])
-    return parse_json_response(response.text)
+    raw_text = call_openrouter_once(prompt, image_data_url)
+    return parse_json_response(raw_text)
 
 
-# -----------------------------
-# Routes
-# -----------------------------
 @app.route("/", methods=["GET"])
 def home():
     return jsonify({
@@ -388,20 +406,12 @@ def home():
 
 @app.route("/health", methods=["GET"])
 def health():
-    raw_key = get_api_key()
-    raw_hex = os.environ.get("RENDER_GEMINI_KEY_HEX", "")
-
+    raw_key = get_openrouter_key()
     return jsonify({
         "status": "ok",
-        "env_has_render_gemini_key_hex": "RENDER_GEMINI_KEY_HEX" in os.environ,
-        "env_has_render_gemini_key": "RENDER_GEMINI_KEY" in os.environ,
-        "env_has_gemini_key": "GEMINI_API_KEY" in os.environ,
-        "env_has_gemini_model": "GEMINI_MODEL" in os.environ,
-        "hex_length": len(raw_hex),
-        "gemini_key_loaded": bool(raw_key),
-        "key_length": len(raw_key),
+        "openrouter_key_loaded": bool(raw_key),
         "key_preview": (raw_key[:6] + "...") if raw_key else "NONE",
-        "model": get_model_name()
+        "model": get_openrouter_model()
     })
 
 
@@ -419,12 +429,10 @@ def analyze():
             return jsonify({"error": "No selected file"}), 400
 
         if not allowed_file(image_file.filename):
-            return jsonify({"error": "Invalid file type. Use png, jpg, jpeg, webp, heic, or heif"}), 400
+            return jsonify({"error": "Invalid file type. Use png, jpg, jpeg, or webp"}), 400
 
-        model, current_api_key, model_name = build_model()
-
-        if not current_api_key:
-            return jsonify({"error": "GEMINI_API_KEY not found"}), 500
+        if not get_openrouter_key():
+            return jsonify({"error": "OPENROUTER_API_KEY not found"}), 500
 
         file_ext = image_file.filename.rsplit(".", 1)[1].lower()
         filename = f"{uuid.uuid4()}.{file_ext}"
@@ -432,13 +440,14 @@ def analyze():
         image_file.save(str(filepath))
 
         try:
-            img = Image.open(filepath)
+            Image.open(filepath)
         except Exception:
             return jsonify({
                 "error": "Could not open this image. Please try JPG, PNG, or WEBP."
             }), 400
 
-        parsed = analyze_troy_image_once(model, img, age)
+        image_data_url = image_to_data_url(filepath)
+        parsed = analyze_troy_image_once(image_data_url, age)
 
         image_status = str(parsed.get("imageStatus", "invalid")).strip().lower()
 
@@ -487,7 +496,6 @@ def analyze():
             sessions[session_id] = result
             return jsonify(result), 200
 
-        # invalid path
         invalid_reason = str(parsed.get("whatWeFound", {}).get("summary", "")).strip()
         if not invalid_reason:
             invalid_reason = "We couldn’t clearly analyze this image."
@@ -537,21 +545,14 @@ def analyze():
         error_text = str(e)
         print("Analyze error:", error_text)
 
-        if is_leaked_key_error(error_text):
-            return jsonify({
-                "error": "Gemini API key was blocked as leaked. Create a new key and keep it only in Render environment variables."
-            }), 403
-
-        if is_invalid_key_error(error_text):
-            return jsonify({
-                "error": "Gemini API key is invalid. Add a fresh key in Render environment variables."
-            }), 403
-
-        if is_quota_error(error_text):
+        if "429" in error_text:
             return build_rate_limit_response()
 
-        if is_temporary_error(error_text):
+        if "503" in error_text or "upstream error" in error_text.lower():
             return build_service_retry_response()
+
+        if "OPENROUTER_API_KEY not found" in error_text:
+            return jsonify({"error": "OPENROUTER_API_KEY not found"}), 500
 
         return jsonify({
             "error": "Something went wrong",
@@ -569,10 +570,8 @@ def ask():
         if not question:
             return jsonify({"error": "Question is required"}), 400
 
-        model, current_api_key, model_name = build_model()
-
-        if not current_api_key:
-            return jsonify({"error": "GEMINI_API_KEY not found"}), 500
+        if not get_openrouter_key():
+            return jsonify({"error": "OPENROUTER_API_KEY not found"}), 500
 
         prompt = f"""
 You are helping a parent understand their child's Troy block build.
@@ -587,32 +586,50 @@ Answer in a short, warm, simple way for a parent.
 Keep it to 3 to 5 short lines.
 """
 
-        response = model.generate_content(prompt)
+        raw_text = call_openrouter_once(prompt, "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADElEQVR42mP8/5+hHgAHggJ/PfVhNwAAAABJRU5ErkJggg==")
+        # The route above is image-oriented, so for /ask we call OpenRouter directly below instead.
+
+        payload = {
+            "model": get_openrouter_model(),
+            "messages": [
+                {"role": "user", "content": prompt}
+            ],
+            "temperature": 0.2,
+            "max_tokens": 400,
+        }
+
+        response = requests.post(
+            "https://openrouter.ai/api/v1/chat/completions",
+            headers=openrouter_headers(),
+            json=payload,
+            timeout=60,
+        )
+
+        if not response.ok:
+            raise RuntimeError(f"{response.status_code}: {response.text}")
+
+        data = response.json()
+        content = data["choices"][0]["message"]["content"]
+
+        if isinstance(content, list):
+            content = "".join(
+                part.get("text", "") for part in content if isinstance(part, dict)
+            )
 
         return jsonify({
-            "answer": response.text.strip()
+            "answer": str(content).strip()
         }), 200
 
     except Exception as e:
         error_text = str(e)
         print("Ask error:", error_text)
 
-        if is_leaked_key_error(error_text):
-            return jsonify({
-                "error": "Gemini API key was blocked as leaked. Create a new key and keep it only in Render environment variables."
-            }), 403
-
-        if is_invalid_key_error(error_text):
-            return jsonify({
-                "error": "Gemini API key is invalid. Add a fresh key in Render environment variables."
-            }), 403
-
-        if is_quota_error(error_text):
+        if "429" in error_text:
             return jsonify({
                 "answer": "AI usage limit reached right now. Please wait a minute and try again."
             }), 200
 
-        if is_temporary_error(error_text):
+        if "503" in error_text or "upstream error" in error_text.lower():
             return jsonify({
                 "answer": "Live AI Q&A is temporarily unavailable right now. Please try again later."
             }), 200
