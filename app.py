@@ -22,7 +22,7 @@ gemini_model = genai.GenerativeModel("gemini-2.0-flash")
 
 ALLOWED_MIME_TYPES    = {"image/jpeg", "image/png", "image/webp", "image/gif"}
 MAX_IMAGE_DIMENSION   = 2048
-MODEL_NAME = "gemini-2.0-flash"
+MODEL_NAME            = "gemini-2.0-flash"
 VALID_CLASSIFICATIONS = {"valid_troy_build", "unclear_image", "non_troy_image"}
 VALID_CATEGORIES      = {"tower", "bridge", "house", "vehicle", "abstract", "enclosure", "animal", "other"}
 VALID_COMPLEXITY      = {"simple", "medium", "complex"}
@@ -263,7 +263,6 @@ def call_gemini_vision(image_bytes: bytes, media_type: str) -> dict[str, Any]:
         contents=[image_part, SYSTEM_PROMPT],
         generation_config=genai.GenerationConfig(temperature=0.0, max_output_tokens=1200, top_p=1.0),
     )
-    
     raw_text = response.text.strip()
     logger.info("Raw Gemini response: %s", raw_text[:500])
     if raw_text.startswith("```"):
@@ -387,15 +386,27 @@ def analyze(image_bytes: bytes, mime_type: str) -> tuple[Response, int]:
         raw_output = call_gemini_vision(processed_bytes, processed_mime)
     except ValueError as exc:
         logger.error("Gemini returned unparseable output: %s", exc)
-        return error_response("The vision model returned an unexpected response. Please try again.", HTTPStatus.BAD_GATEWAY)
+        return error_response(
+            "The vision model returned an unexpected response. Please try again.",
+            HTTPStatus.BAD_GATEWAY,
+        )
     except Exception as exc:
         logger.exception("Gemini API call failed")
+        error_msg = str(exc)
+        if "429" in error_msg or "ResourceExhausted" in error_msg:
+            return error_response(
+                "Too many requests. Please wait a moment and try again.",
+                HTTPStatus.TOO_MANY_REQUESTS,
+            )
         return error_response(f"Vision API error: {exc}", HTTPStatus.BAD_GATEWAY)
     try:
         result = validate_and_build(raw_output)
     except ValueError as exc:
         logger.error("Schema validation failed: %s | raw: %s", exc, raw_output)
-        return error_response("The vision model returned a structurally invalid response. Please try again.", HTTPStatus.BAD_GATEWAY)
+        return error_response(
+            "The vision model returned a structurally invalid response. Please try again.",
+            HTTPStatus.BAD_GATEWAY,
+        )
     logger.info("Classification: %s | Build: %s", result.classification, getattr(result, "build_name", "n/a"))
     return jsonify(result.to_dict()), HTTPStatus.OK
 
