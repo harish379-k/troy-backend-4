@@ -1,417 +1,631 @@
-from __future__ import annotations
-import json
-import logging
 import os
-from dataclasses import dataclass
-from functools import wraps
-from http import HTTPStatus
-from io import BytesIO
-from typing import Any
-from flask import Flask, jsonify, request, Response
-import google.generativeai as genai
-from PIL import Image, ImageEnhance
+import json
+import uuid
+import time
+import base64
+from pathlib import Path
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s — %(message)s")
-logger = logging.getLogger("troy_analyzer")
+import requests
+from flask import Flask, request, jsonify
+from flask_cors import CORS
+from PIL import Image
+
+BASE_DIR = Path(__file__).resolve().parent
+UPLOAD_FOLDER = BASE_DIR / "uploads"
+UPLOAD_FOLDER.mkdir(exist_ok=True)
+
+ALLOWED_EXTENSIONS = {"png", "jpg", "jpeg", "webp"}
+MAX_BASE64_IMAGE_BYTES = 4 * 1024 * 1024
 
 app = Flask(__name__)
-app.config["MAX_CONTENT_LENGTH"] = 10 * 1024 * 1024
+CORS(app, origins="*")
 
-genai.configure(api_key=os.environ.get("GEMINI_API_KEY", ""))
-gemini_model = genai.GenerativeModel("gemini-2.0-flash")
-
-ALLOWED_MIME_TYPES    = {"image/jpeg", "image/png", "image/webp", "image/gif"}
-MAX_IMAGE_DIMENSION   = 2048
-MODEL_NAME            = "gemini-2.0-flash"
-VALID_CLASSIFICATIONS = {"valid_troy_build", "unclear_image", "non_troy_image"}
-VALID_CATEGORIES      = {"tower", "bridge", "house", "vehicle", "abstract", "enclosure", "animal", "other"}
-VALID_COMPLEXITY      = {"simple", "medium", "complex"}
-VALID_STABILITY       = {"stable", "somewhat_stable", "precarious"}
-
-SYSTEM_PROMPT = """You are an expert visual analyst and child development specialist for Troy wooden block sets.
-
-Your job is to look at an image and determine:
-1. Whether it shows a Troy wooden block build
-2. If yes — what the build actually looks like and resembles, based purely on its physical shape
-
----
-
-## WHAT TROY WOODEN BLOCKS LOOK LIKE
-
-Troy wooden blocks are:
-- Solid wood — matte or satin finish, NOT shiny plastic, NOT foam, NOT cardboard
-- Simple geometric shapes: cube, rectangular prism, cylinder, arch, triangular prism, semicircle, cone
-- Sized for small children (roughly 5-15 cm per block)
-- Colors: natural wood tan/beige, red, blue, yellow, green — flat solid colors only
-- No studs, no connectors, no printed text or logos
-- Edges slightly rounded for child safety
-- Look heavy and solid, NOT hollow or transparent
-
-## WHAT IS NOT A TROY BUILD
-
-Classify as non_troy_image if you see:
-- LEGO or Duplo (circular studs on top)
-- Mega Bloks (large hollow plastic)
-- Magnetic tiles (flat, translucent, plastic frames)
-- Foam blocks (soft-looking, letters/numbers on them)
-- Cardboard boxes
-- K'NEX, Lincoln Logs, or connector-based toys
-- Drawings or illustrations
-- Random household objects
-- People, animals, food, or scenery with no blocks present
-- A single loose block not part of any build
-
----
-
-## STEP 1 — CLASSIFY
-
-Look at the entire image. Assign exactly one classification:
-
-"valid_troy_build" → 2 or more Troy wooden blocks clearly and deliberately arranged into a structure.
-"unclear_image" → Blurry, too dark, too cropped, only one block visible, or cannot clearly confirm Troy wooden blocks. When in doubt use this.
-"non_troy_image" → Clearly shows something other than Troy wooden blocks.
-
----
-
-## STEP 2 — SELF CHECK
-
-Before writing any output, answer these internally:
-1. Can I see at least 2 blocks clearly?
-2. Do the blocks look like solid matte wood (not plastic or foam)?
-3. Are shapes simple geometric solids with no studs, connectors, or prints?
-4. Is this a deliberate build — not just scattered blocks?
-5. Am I at least 85% confident this is a Troy wooden block build?
-
-If ANY answer is NO use "unclear_image" or "non_troy_image".
-
----
-
-## STEP 3 — DEEP VISUAL ANALYSIS (do this before naming anything)
-
-If classification is "valid_troy_build", study the full image and answer internally:
-
-SILHOUETTE: What is the overall outline? Tall and thin? Wide and low? Any bumps or protrusions?
-STRUCTURE: Where are blocks placed relative to each other? Any sticking out horizontally like legs or arms? Any narrow neck section? Any small block on top like a head?
-RESEMBLANCE: What real-world object does this most closely resemble? Animals, buildings, vehicles, furniture?
-
----
-
-## STEP 4 — NAMING RULES
-
-build_name: Max 6 words. Must match STEP 3.
-- TALL NARROW vertical stack on wider base = giraffe, lighthouse, rocket, or tower
-- FOUR OUTWARD PROTRUSIONS from central body = dog, horse, table, or spider
-- WIDE FLAT BASE with pointed or domed top = house, barn, or castle
-- GAP or OPENING in the middle = bridge, gate, or arch
-- LONG HORIZONTAL body with small protrusions = train, snake, or crocodile
-- NEVER assign a name that contradicts your silhouette observations
-
-build_category: One of: "tower", "bridge", "house", "vehicle", "abstract", "enclosure", "animal", "other"
-Use "animal" whenever the build resembles any living creature.
-
----
-
-## STEP 5 — COMPLETE ANALYSIS
-
-block_count: Integer count of all visible blocks.
-identified_shapes: Only shapes you can confirm: "cube", "rectangular_prism", "cylinder", "arch", "triangular_prism", "semicircle", "cone", "square", "other"
-complexity_level: "simple" 1-4 blocks, "medium" 5-10 blocks, "complex" 11+ blocks
-stability_rating: "stable", "somewhat_stable", or "precarious"
-color_observations: Only colors you can actually see.
-spatial_observations: 2-3 sentences describing literal physical layout.
-visual_reasoning: 1 sentence explaining why you gave it that name referencing specific shapes.
-developmental_feedback: 2-3 warm encouraging sentences for the child referencing specific visible shapes.
-suggestions: Exactly 2 age-appropriate suggestions for extending the build.
-
----
-
-## OUTPUT FORMAT
-
-Single raw JSON only. No markdown. No prose outside the JSON.
-
-If "valid_troy_build":
-{
-  "classification": "valid_troy_build",
-  "build_name": "...",
-  "block_count": 0,
-  "identified_shapes": ["..."],
-  "build_category": "...",
-  "complexity_level": "...",
-  "stability_rating": "...",
-  "color_observations": ["..."],
-  "spatial_observations": "...",
-  "visual_reasoning": "...",
-  "developmental_feedback": "...",
-  "suggestions": ["...", "..."]
-}
-
-If "unclear_image":
-{
-  "classification": "unclear_image",
-  "message": "The photo is too unclear to analyze. Please try again with better lighting, move back slightly so all the blocks are in frame, and make sure the image is in focus."
-}
-
-If "non_troy_image":
-{
-  "classification": "non_troy_image",
-  "message": "This does not appear to be a Troy wooden block build. Please upload a photo of a structure built with Troy wooden blocks."
-}
-
-ABSOLUTE RULES:
-- Always complete STEP 3 before deciding build_name
-- build_name must match spatial_observations and visual_reasoning
-- Never output anything outside the JSON
-- Never invent details you cannot see
-- Valid JSON only — no trailing commas, no comments"""
+sessions = {}
 
 
-@dataclass
-class ValidBuildResponse:
-    classification: str
-    build_name: str
-    block_count: int
-    identified_shapes: list[str]
-    build_category: str
-    complexity_level: str
-    stability_rating: str
-    color_observations: list[str]
-    spatial_observations: str
-    visual_reasoning: str
-    developmental_feedback: str
-    suggestions: list[str]
-
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "classification": self.classification,
-            "build_name": self.build_name,
-            "block_count": self.block_count,
-            "identified_shapes": self.identified_shapes,
-            "build_category": self.build_category,
-            "complexity_level": self.complexity_level,
-            "stability_rating": self.stability_rating,
-            "color_observations": self.color_observations,
-            "spatial_observations": self.spatial_observations,
-            "visual_reasoning": self.visual_reasoning,
-            "developmental_feedback": self.developmental_feedback,
-            "suggestions": self.suggestions,
-        }
+def get_groq_key():
+    return os.environ.get("GROQ_API_KEY", "").strip()
 
 
-@dataclass
-class GatedResponse:
-    classification: str
-    message: str
-
-    def to_dict(self) -> dict[str, Any]:
-        return {"classification": self.classification, "message": self.message}
+def get_groq_model():
+    return os.environ.get(
+        "GROQ_MODEL",
+        "meta-llama/llama-4-scout-17b-16e-instruct"
+    ).strip()
 
 
-def _auto_rotate(img: Image.Image) -> Image.Image:
-    try:
-        from PIL import ExifTags
-        exif = img._getexif()
-        if exif:
-            for tag, val in exif.items():
-                if ExifTags.TAGS.get(tag) == "Orientation":
-                    rotations = {3: 180, 6: 270, 8: 90}
-                    if val in rotations:
-                        img = img.rotate(rotations[val], expand=True)
-                    break
-    except Exception:
-        pass
-    return img
+def groq_headers():
+    return {
+        "Authorization": f"Bearer {get_groq_key()}",
+        "Content-Type": "application/json",
+    }
 
 
-def _enhance_image(img: Image.Image) -> Image.Image:
-    try:
-        img = ImageEnhance.Contrast(img).enhance(1.15)
-        img = ImageEnhance.Sharpness(img).enhance(1.25)
-        img = ImageEnhance.Color(img).enhance(1.1)
-    except Exception:
-        pass
-    return img
+def allowed_file(filename: str) -> bool:
+    return "." in filename and filename.rsplit(".", 1)[1].lower() in ALLOWED_EXTENSIONS
 
 
-def preprocess_image(raw_bytes: bytes, mime_type: str) -> tuple[bytes, str]:
-    img = Image.open(BytesIO(raw_bytes))
-    img = _auto_rotate(img)
-    min_dim = min(img.width, img.height)
-    if min_dim < 512:
-        scale = 512 / min_dim
-        img = img.resize((int(img.width * scale), int(img.height * scale)), Image.LANCZOS)
-    max_dim = max(img.width, img.height)
-    if max_dim > MAX_IMAGE_DIMENSION:
-        scale = MAX_IMAGE_DIMENSION / max_dim
-        img = img.resize((int(img.width * scale), int(img.height * scale)), Image.LANCZOS)
-    img = _enhance_image(img)
-    if img.mode in ("RGBA", "P", "LA"):
-        background = Image.new("RGB", img.size, (255, 255, 255))
-        if img.mode == "P":
-            img = img.convert("RGBA")
-        background.paste(img, mask=img.split()[-1] if img.mode in ("RGBA", "LA") else None)
-        img = background
-    elif img.mode != "RGB":
-        img = img.convert("RGB")
-    buf = BytesIO()
-    img.save(buf, format="JPEG", quality=95, optimize=True)
-    return buf.getvalue(), "image/jpeg"
+def extract_json_block(text: str) -> str:
+    if not text:
+        return ""
+
+    text = text.strip()
+
+    if text.startswith("```"):
+        lines = text.splitlines()
+        if len(lines) >= 3:
+            text = "\n".join(lines[1:-1]).strip()
+
+    first_brace = text.find("{")
+    last_brace = text.rfind("}")
+
+    if first_brace != -1 and last_brace != -1 and last_brace > first_brace:
+        return text[first_brace:last_brace + 1]
+
+    return text
 
 
-def call_gemini_vision(image_bytes: bytes, media_type: str) -> dict[str, Any]:
-    image_part = {"mime_type": media_type, "data": image_bytes}
-    response = gemini_model.generate_content(
-        contents=[image_part, SYSTEM_PROMPT],
-        generation_config=genai.GenerationConfig(temperature=0.0, max_output_tokens=1200, top_p=1.0),
-    )
-    raw_text = response.text.strip()
-    logger.info("Raw Gemini response: %s", raw_text[:500])
-    if raw_text.startswith("```"):
-        parts = raw_text.split("```")
-        raw_text = parts[1] if len(parts) > 1 else raw_text
-        if raw_text.startswith("json"):
-            raw_text = raw_text[4:]
-        raw_text = raw_text.strip()
-    start = raw_text.find("{")
-    end = raw_text.rfind("}") + 1
-    if start != -1 and end > start:
-        raw_text = raw_text[start:end]
-    try:
-        return json.loads(raw_text)
-    except json.JSONDecodeError as exc:
-        raise ValueError(f"Model returned non-JSON output: {raw_text[:200]}") from exc
+def parse_json_response(text: str):
+    return json.loads(extract_json_block(text))
 
 
-def validate_and_build(raw: dict[str, Any]) -> ValidBuildResponse | GatedResponse:
-    classification = raw.get("classification")
-    if classification not in VALID_CLASSIFICATIONS:
-        raise ValueError(f"Invalid classification '{classification}'.")
-    if classification in ("unclear_image", "non_troy_image"):
-        message = raw.get("message", "")
-        if not isinstance(message, str) or not message.strip():
-            raise ValueError(f"Missing message for '{classification}'.")
-        return GatedResponse(classification=classification, message=message.strip())
-    required_fields = [
-        "build_name", "block_count", "identified_shapes", "build_category",
-        "complexity_level", "stability_rating", "color_observations",
-        "spatial_observations", "visual_reasoning", "developmental_feedback", "suggestions",
-    ]
-    missing = [f for f in required_fields if f not in raw]
-    if missing:
-        raise ValueError(f"Missing required fields: {missing}")
-    build_name = str(raw["build_name"]).strip()[:80]
-    try:
-        block_count = int(raw["block_count"])
-        if block_count < 1:
-            raise ValueError
-    except (TypeError, ValueError):
-        raise ValueError(f"block_count must be positive integer got: {raw['block_count']!r}")
-    identified_shapes = raw["identified_shapes"]
-    if not isinstance(identified_shapes, list) or not identified_shapes:
-        raise ValueError("identified_shapes must be a non-empty list.")
-    identified_shapes = [str(s).lower().strip() for s in identified_shapes]
-    build_category = str(raw["build_category"]).lower().strip()
-    if build_category not in VALID_CATEGORIES:
-        build_category = "other"
-    complexity_level = str(raw["complexity_level"]).lower().strip()
-    if complexity_level not in VALID_COMPLEXITY:
-        raise ValueError(f"complexity_level must be one of {VALID_COMPLEXITY}.")
-    stability_rating = str(raw["stability_rating"]).lower().strip()
-    if stability_rating not in VALID_STABILITY:
-        raise ValueError(f"stability_rating must be one of {VALID_STABILITY}.")
-    color_observations = raw.get("color_observations", [])
-    if not isinstance(color_observations, list):
-        color_observations = []
-    color_observations = [str(c).strip() for c in color_observations if str(c).strip()]
-    spatial_observations = str(raw["spatial_observations"]).strip()
-    visual_reasoning = str(raw["visual_reasoning"]).strip()
-    developmental_feedback = str(raw["developmental_feedback"]).strip()
-    if not developmental_feedback:
-        raise ValueError("developmental_feedback must not be empty.")
-    suggestions = raw["suggestions"]
-    if not isinstance(suggestions, list):
-        raise ValueError("suggestions must be a list.")
-    suggestions = [str(s).strip() for s in suggestions if str(s).strip()][:2]
-    return ValidBuildResponse(
-        classification="valid_troy_build",
-        build_name=build_name,
-        block_count=block_count,
-        identified_shapes=identified_shapes,
-        build_category=build_category,
-        complexity_level=complexity_level,
-        stability_rating=stability_rating,
-        color_observations=color_observations,
-        spatial_observations=spatial_observations,
-        visual_reasoning=visual_reasoning,
-        developmental_feedback=developmental_feedback,
-        suggestions=suggestions,
-    )
+def ensure_list(value, fallback=None):
+    if isinstance(value, list):
+        result = [str(x).strip() for x in value if str(x).strip()]
+        return result if result else (fallback or [])
+    if isinstance(value, str) and value.strip():
+        return [value.strip()]
+    return fallback or []
 
 
-def error_response(message: str, status: int) -> tuple[Response, int]:
-    return jsonify({"error": message}), status
+def ensure_learning_cards(cards):
+    if not isinstance(cards, list):
+        return []
+
+    cleaned = []
+    allowed_colors = {"cream", "green", "blue"}
+
+    for card in cards:
+        if not isinstance(card, dict):
+            continue
+
+        title = str(card.get("title", "")).strip()
+        description = str(card.get("description", "")).strip()
+        color = str(card.get("color", "cream")).strip().lower()
+
+        if not title or not description:
+            continue
+
+        if color not in allowed_colors:
+            color = "cream"
+
+        cleaned.append({
+            "title": title,
+            "description": description,
+            "color": color
+        })
+
+    return cleaned[:3]
 
 
-def require_image_upload(f):
-    @wraps(f)
-    def wrapper(*args, **kwargs):
-        if "image" not in request.files:
-            return error_response("No image field in request.", HTTPStatus.BAD_REQUEST)
-        file = request.files["image"]
-        if file.filename == "":
-            return error_response("Empty filename.", HTTPStatus.BAD_REQUEST)
-        mime_type = file.content_type or ""
-        if mime_type not in ALLOWED_MIME_TYPES:
-            return error_response(
-                f"Unsupported image type '{mime_type}'. Accepted: {', '.join(sorted(ALLOWED_MIME_TYPES))}",
-                HTTPStatus.UNSUPPORTED_MEDIA_TYPE,
+def image_to_data_url(path: Path) -> str:
+    file_size = path.stat().st_size
+    if file_size > MAX_BASE64_IMAGE_BYTES:
+        raise ValueError("Image is too large. Please upload an image under 4MB.")
+
+    ext = path.suffix.lower()
+    mime = "image/jpeg"
+    if ext == ".png":
+        mime = "image/png"
+    elif ext == ".webp":
+        mime = "image/webp"
+
+    with open(path, "rb") as f:
+        encoded = base64.b64encode(f.read()).decode("utf-8")
+
+    return f"data:{mime};base64,{encoded}"
+
+
+def is_rate_limit_error(error_text: str) -> bool:
+    lower = error_text.lower()
+    return "429" in error_text or "rate limit" in lower or "quota" in lower
+
+
+def is_temporary_error(error_text: str) -> bool:
+    lower = error_text.lower()
+    return "503" in error_text or "temporarily unavailable" in lower or "timeout" in lower
+
+
+def extract_content_from_groq(data: dict) -> str:
+    content = data["choices"][0]["message"]["content"]
+
+    if isinstance(content, str):
+        return content.strip()
+
+    if isinstance(content, list):
+        parts = []
+        for part in content:
+            if isinstance(part, dict):
+                text = part.get("text", "")
+                if text:
+                    parts.append(text)
+        return "".join(parts).strip()
+
+    return str(content).strip()
+
+
+def call_groq(payload, max_retries=2):
+    delay = 2
+    last_error = None
+
+    for attempt in range(max_retries):
+        try:
+            response = requests.post(
+                "https://api.groq.com/openai/v1/chat/completions",
+                headers=groq_headers(),
+                json=payload,
+                timeout=90,
             )
-        return f(*args, image_bytes=file.read(), mime_type=mime_type, **kwargs)
-    return wrapper
+
+            if response.status_code == 429:
+                last_error = f"429: {response.text}"
+                if attempt < max_retries - 1:
+                    time.sleep(delay)
+                    delay *= 2
+                    continue
+                raise RuntimeError(last_error)
+
+            if response.status_code >= 500:
+                last_error = f"{response.status_code}: {response.text}"
+                if attempt < max_retries - 1:
+                    time.sleep(delay)
+                    delay *= 2
+                    continue
+                raise RuntimeError(last_error)
+
+            if not response.ok:
+                raise RuntimeError(f"{response.status_code}: {response.text}")
+
+            return response.json()
+
+        except requests.RequestException as e:
+            last_error = str(e)
+            if attempt < max_retries - 1:
+                time.sleep(delay)
+                delay *= 2
+                continue
+            raise RuntimeError(last_error)
+
+    raise RuntimeError(last_error or "Groq request failed")
+
+
+def build_invalid_photo_response(age, reason, noticed=None, suggestions=None, ideas=None):
+    session_id = str(uuid.uuid4())
+
+    result = {
+        "status": "success",
+        "imageStatus": "invalid",
+        "buildGuess": {
+            "title": "We couldn’t clearly analyze this image",
+            "subtitle": reason
+        },
+        "whatWeFound": {
+            "title": "What we found",
+            "summary": reason
+        },
+        "whatTheyLearned": [],
+        "whatWeNoticed": noticed or [
+            "The image does not clearly show enough visible Troy blocks",
+            "The structure may be blurry, cropped, too far away, or unrelated to Troy blocks",
+            "A clearer photo will help us give the right feedback"
+        ],
+        "suggestionsForParent": suggestions or [
+            "Retake the photo with the full structure visible",
+            "Use better lighting and a cleaner background",
+            "Make sure the Troy block build is the main focus of the image"
+        ],
+        "nextBuildIdeas": ideas or [
+            "Build a tower",
+            "Build a bridge",
+            "Build a small house"
+        ],
+        "session_id": session_id
+    }
+
+    sessions[session_id] = result
+    return result
+
+
+def build_rate_limit_response():
+    return jsonify({
+        "error": "AI usage limit reached right now. Please wait a minute and try again."
+    }), 429
+
+
+def build_service_retry_response():
+    return jsonify({
+        "error": "The AI analysis is temporarily unavailable. Please try again in a moment."
+    }), 503
+
+
+def analyze_troy_image_once(image_data_url: str, age: str):
+    prompt = f"""
+You are analyzing whether an uploaded image is a Troy wooden blocks build.
+
+The child age is: {age if age else "unknown"}.
+
+You must decide whether the image is:
+1. a clear Troy blocks build that can be analyzed
+2. an unclear / blurry / cropped / too-dark image
+3. not a Troy blocks image or unrelated image
+
+Return ONLY valid JSON in exactly one of these formats.
+
+IF THE IMAGE IS A CLEAR TROY BLOCKS BUILD:
+{{
+  "status": "success",
+  "imageStatus": "valid",
+  "buildGuess": {{
+    "title": "short guessed build name",
+    "subtitle": "one short sentence describing what the child likely built"
+  }},
+  "whatWeFound": {{
+    "title": "What we found",
+    "summary": "1 to 2 short sentences"
+  }},
+  "whatTheyLearned": [
+    {{
+      "title": "skill name",
+      "description": "short description",
+      "color": "cream"
+    }},
+    {{
+      "title": "skill name",
+      "description": "short description",
+      "color": "green"
+    }},
+    {{
+      "title": "skill name",
+      "description": "short description",
+      "color": "blue"
+    }}
+  ],
+  "whatWeNoticed": [],
+  "suggestionsForParent": [
+    "short suggestion 1",
+    "short suggestion 2",
+    "short suggestion 3"
+  ],
+  "nextBuildIdeas": [
+    "short idea 1",
+    "short idea 2",
+    "short idea 3"
+  ]
+}}
+
+IF THE IMAGE IS UNCLEAR / BLURRY / CROPPED / TOO FEW BLOCKS VISIBLE:
+{{
+  "status": "success",
+  "imageStatus": "invalid",
+  "buildGuess": {{
+    "title": "We couldn’t clearly analyze this image",
+    "subtitle": "The image is too unclear to analyze properly. Please try again with a clearer photo."
+  }},
+  "whatWeFound": {{
+    "title": "What we found",
+    "summary": "The image appears blurry, cropped, dark, or does not show enough of the build clearly."
+  }},
+  "whatTheyLearned": [],
+  "whatWeNoticed": [
+    "The image is not clear enough for analysis",
+    "The full block structure may not be visible",
+    "Please try again with a clearer Troy blocks photo"
+  ],
+  "suggestionsForParent": [
+    "Retake the photo with better lighting",
+    "Make sure the whole structure is visible",
+    "Move closer and keep the image steady"
+  ],
+  "nextBuildIdeas": [
+    "Build a tower",
+    "Build a bridge",
+    "Build a small house"
+  ]
+}}
+
+IF THE IMAGE IS NOT A TROY BLOCKS IMAGE / UNRELATED:
+{{
+  "status": "success",
+  "imageStatus": "invalid",
+  "buildGuess": {{
+    "title": "This doesn’t look like a Troy blocks build",
+    "subtitle": "We could not identify a Troy wooden blocks structure in this image."
+  }},
+  "whatWeFound": {{
+    "title": "What we found",
+    "summary": "This image does not appear to show a Troy blocks construction."
+  }},
+  "whatTheyLearned": [],
+  "whatWeNoticed": [
+    "The image does not look like a Troy wooden blocks build",
+    "The main subject appears unrelated to Troy blocks",
+    "Please upload a clear Troy block structure image"
+  ],
+  "suggestionsForParent": [
+    "Upload a photo where the Troy block structure is clearly visible",
+    "Make sure the build is the main subject of the image",
+    "Try again with a proper Troy blocks construction photo"
+  ],
+  "nextBuildIdeas": [
+    "Build a tower",
+    "Build a bridge",
+    "Build a small house"
+  ]
+}}
+
+Important rules:
+- Be strict
+- Do NOT mark the image as valid unless it is clearly a Troy blocks structure and visible enough to analyze
+- If the image is random, mostly a person, mostly background, unrelated object, or not a clear wooden block build, mark it invalid
+- If the image is unclear, mark it invalid
+- Output JSON only
+- No markdown
+- No explanation outside JSON
+"""
+
+    payload = {
+        "model": get_groq_model(),
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": prompt},
+                    {"type": "image_url", "image_url": {"url": image_data_url}},
+                ],
+            }
+        ],
+        "temperature": 0.2,
+        "max_completion_tokens": 1200,
+        "top_p": 1,
+        "stream": False,
+    }
+
+    response_json = call_groq(payload)
+    raw_text = extract_content_from_groq(response_json)
+    return parse_json_response(raw_text)
+
+
+@app.route("/", methods=["GET"])
+def home():
+    return jsonify({
+        "message": "Troy backend is running",
+        "server": "ok"
+    })
 
 
 @app.route("/health", methods=["GET"])
-def health() -> tuple[Response, int]:
-    return jsonify({"status": "ok", "model": MODEL_NAME}), HTTPStatus.OK
+def health():
+    raw_key = get_groq_key()
+    return jsonify({
+        "status": "ok",
+        "groq_key_loaded": bool(raw_key),
+        "key_preview": (raw_key[:6] + "...") if raw_key else "NONE",
+        "model": get_groq_model()
+    })
 
 
 @app.route("/analyze", methods=["POST"])
-@require_image_upload
-def analyze(image_bytes: bytes, mime_type: str) -> tuple[Response, int]:
+def analyze():
+    age = request.form.get("age", "").strip()
+
     try:
-        processed_bytes, processed_mime = preprocess_image(image_bytes, mime_type)
-    except Exception as exc:
-        logger.exception("Image preprocessing failed")
-        return error_response(f"Could not process image: {exc}", HTTPStatus.BAD_REQUEST)
-    try:
-        raw_output = call_gemini_vision(processed_bytes, processed_mime)
-    except ValueError as exc:
-        logger.error("Gemini returned unparseable output: %s", exc)
-        return error_response(
-            "The vision model returned an unexpected response. Please try again.",
-            HTTPStatus.BAD_GATEWAY,
-        )
-    except Exception as exc:
-        logger.exception("Gemini API call failed")
-        error_msg = str(exc)
-        if "429" in error_msg or "ResourceExhausted" in error_msg:
-            return error_response(
-                "Too many requests. Please wait a moment and try again.",
-                HTTPStatus.TOO_MANY_REQUESTS,
+        if "image" not in request.files:
+            return jsonify({"error": "No image file uploaded"}), 400
+
+        image_file = request.files["image"]
+
+        if image_file.filename == "":
+            return jsonify({"error": "No selected file"}), 400
+
+        if not allowed_file(image_file.filename):
+            return jsonify({"error": "Invalid file type. Use png, jpg, jpeg, or webp"}), 400
+
+        if not get_groq_key():
+            return jsonify({"error": "GROQ_API_KEY not found"}), 500
+
+        file_ext = image_file.filename.rsplit(".", 1)[1].lower()
+        filename = f"{uuid.uuid4()}.{file_ext}"
+        filepath = UPLOAD_FOLDER / filename
+        image_file.save(str(filepath))
+
+        try:
+            Image.open(filepath)
+        except Exception:
+            return jsonify({
+                "error": "Could not open this image. Please try JPG, PNG, or WEBP."
+            }), 400
+
+        image_data_url = image_to_data_url(filepath)
+        parsed = analyze_troy_image_once(image_data_url, age)
+
+        image_status = str(parsed.get("imageStatus", "invalid")).strip().lower()
+
+        if image_status == "valid":
+            cards = ensure_learning_cards(parsed.get("whatTheyLearned"))
+            if len(cards) < 3:
+                return jsonify(build_invalid_photo_response(
+                    age,
+                    "We could not confidently analyze this image. Please try again with a clearer Troy blocks photo."
+                )), 200
+
+            session_id = str(uuid.uuid4())
+
+            result = {
+                "status": "success",
+                "imageStatus": "valid",
+                "buildGuess": {
+                    "title": str(parsed.get("buildGuess", {}).get("title", "Creative Troy block build")).strip(),
+                    "subtitle": str(parsed.get("buildGuess", {}).get("subtitle", "Your little one created a thoughtful Troy block structure!")).strip()
+                },
+                "whatWeFound": {
+                    "title": "What we found",
+                    "summary": str(parsed.get("whatWeFound", {}).get("summary", "This looks like a meaningful Troy block build.")).strip()
+                },
+                "whatTheyLearned": cards,
+                "whatWeNoticed": [],
+                "suggestionsForParent": ensure_list(
+                    parsed.get("suggestionsForParent"),
+                    [
+                        "Ask your child to explain what they built",
+                        "Encourage them to rebuild it taller or wider",
+                        "Try making a stronger version together"
+                    ]
+                ),
+                "nextBuildIdeas": ensure_list(
+                    parsed.get("nextBuildIdeas"),
+                    [
+                        "Build a bridge",
+                        "Build a tower",
+                        "Build a small castle"
+                    ]
+                ),
+                "session_id": session_id
+            }
+
+            sessions[session_id] = result
+            return jsonify(result), 200
+
+        invalid_reason = str(parsed.get("whatWeFound", {}).get("summary", "")).strip()
+        if not invalid_reason:
+            invalid_reason = "We couldn’t clearly analyze this image."
+
+        result = build_invalid_photo_response(
+            age,
+            invalid_reason,
+            noticed=ensure_list(
+                parsed.get("whatWeNoticed"),
+                [
+                    "The image may be unclear or not related to Troy blocks",
+                    "Too little of the build may be visible",
+                    "A clearer image will help us analyze properly"
+                ]
+            ),
+            suggestions=ensure_list(
+                parsed.get("suggestionsForParent"),
+                [
+                    "Retake the photo with the full structure visible",
+                    "Use better lighting and a cleaner background",
+                    "Make sure the Troy block build is the main focus of the image"
+                ]
+            ),
+            ideas=ensure_list(
+                parsed.get("nextBuildIdeas"),
+                [
+                    "Build a tower",
+                    "Build a bridge",
+                    "Build a small house"
+                ]
             )
-        return error_response(f"Vision API error: {exc}", HTTPStatus.BAD_GATEWAY)
-    try:
-        result = validate_and_build(raw_output)
-    except ValueError as exc:
-        logger.error("Schema validation failed: %s | raw: %s", exc, raw_output)
-        return error_response(
-            "The vision model returned a structurally invalid response. Please try again.",
-            HTTPStatus.BAD_GATEWAY,
         )
-    logger.info("Classification: %s | Build: %s", result.classification, getattr(result, "build_name", "n/a"))
-    return jsonify(result.to_dict()), HTTPStatus.OK
+
+        result["buildGuess"] = {
+            "title": str(parsed.get("buildGuess", {}).get("title", "We couldn’t clearly analyze this image")).strip(),
+            "subtitle": str(parsed.get("buildGuess", {}).get("subtitle", invalid_reason)).strip()
+        }
+
+        result["whatWeFound"] = {
+            "title": "What we found",
+            "summary": invalid_reason
+        }
+
+        return jsonify(result), 200
+
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+
+    except Exception as e:
+        error_text = str(e)
+        print("Analyze error:", error_text)
+
+        if is_rate_limit_error(error_text):
+            return build_rate_limit_response()
+
+        if is_temporary_error(error_text):
+            return build_service_retry_response()
+
+        if "GROQ_API_KEY not found" in error_text:
+            return jsonify({"error": "GROQ_API_KEY not found"}), 500
+
+        return jsonify({
+            "error": "Something went wrong",
+            "details": error_text
+        }), 500
+
+
+@app.route("/ask", methods=["POST"])
+def ask():
+    try:
+        data = request.get_json()
+        question = str(data.get("question", "")).strip()
+        summary = str(data.get("summary", "")).strip()
+
+        if not question:
+            return jsonify({"error": "Question is required"}), 400
+
+        if not get_groq_key():
+            return jsonify({"error": "GROQ_API_KEY not found"}), 500
+
+        prompt = f"""
+You are helping a parent understand their child's Troy block build.
+
+Build summary:
+{summary}
+
+Parent question:
+{question}
+
+Answer in a short, warm, simple way for a parent.
+Keep it to 3 to 5 short lines.
+"""
+
+        payload = {
+            "model": get_groq_model(),
+            "messages": [
+                {"role": "user", "content": prompt}
+            ],
+            "temperature": 0.2,
+            "max_completion_tokens": 400,
+            "top_p": 1,
+            "stream": False,
+        }
+
+        response_json = call_groq(payload)
+        content = extract_content_from_groq(response_json)
+
+        return jsonify({
+            "answer": content
+        }), 200
+
+    except Exception as e:
+        error_text = str(e)
+        print("Ask error:", error_text)
+
+        if is_rate_limit_error(error_text):
+            return jsonify({
+                "answer": "AI usage limit reached right now. Please wait a minute and try again."
+            }), 200
+
+        if is_temporary_error(error_text):
+            return jsonify({
+                "answer": "Live AI Q&A is temporarily unavailable right now. Please try again later."
+            }), 200
+
+        return jsonify({
+            "error": "Something went wrong",
+            "details": error_text
+        }), 500
 
 
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 5000))
-    debug = os.environ.get("FLASK_DEBUG", "false").lower() == "true"
-    app.run(host="0.0.0.0", port=port, debug=debug)
+    port = int(os.getenv("PORT", 5000))
+    app.run(host="0.0.0.0", port=port, debug=True)
