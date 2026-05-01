@@ -1,4 +1,3 @@
-# app.py
 from __future__ import annotations
 
 import base64
@@ -38,30 +37,31 @@ logger = logging.getLogger("troy_analyzer")
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 10 * 1024 * 1024  # 10 MB
 
-# AFTER (fails gracefully with a clear error)
 groq_client = Groq(api_key=os.environ.get("GROQ_API_KEY", ""))
+
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
-ALLOWED_MIME_TYPES   = {"image/jpeg", "image/png", "image/webp", "image/gif"}
-MAX_IMAGE_DIMENSION  = 2048
-GROQ_MODEL           = "meta-llama/llama-4-maverick-17b-128e-instruct"
+ALLOWED_MIME_TYPES = {"image/jpeg", "image/png", "image/webp", "image/gif"}
+MAX_IMAGE_DIMENSION = 2048
+GROQ_MODEL = os.environ.get(
+    "GROQ_MODEL",
+    "meta-llama/llama-4-scout-17b-16e-instruct"
+)
 
 VALID_CLASSIFICATIONS = {"valid_troy_build", "unclear_image", "non_troy_image"}
-VALID_CATEGORIES      = {"tower", "bridge", "house", "vehicle", "abstract", "enclosure", "animal", "other"}
-VALID_COMPLEXITY      = {"simple", "medium", "complex"}
-VALID_STABILITY       = {"stable", "somewhat_stable", "precarious"}
+VALID_CATEGORIES = {"tower", "bridge", "house", "vehicle", "abstract", "enclosure", "animal", "other"}
+VALID_COMPLEXITY = {"simple", "medium", "complex"}
+VALID_STABILITY = {"stable", "somewhat_stable", "precarious"}
 
 # ---------------------------------------------------------------------------
-# Prompt — maximum accuracy, shape-aware, anti-hallucination
+# Prompt
 # ---------------------------------------------------------------------------
 SYSTEM_PROMPT = """You are an expert visual analyst and child development specialist for Troy wooden block sets.
 
 Your job is to look at an image and determine:
 1. Whether it shows a Troy wooden block build
 2. If yes — what the build actually looks like and resembles, based purely on its physical shape
-
----
 
 ## WHAT TROY WOODEN BLOCKS LOOK LIKE
 
@@ -88,119 +88,28 @@ Classify as non_troy_image if you see:
 - People, animals, food, or scenery with no blocks present
 - A single loose block not part of any build
 
----
-
 ## STEP 1 — CLASSIFY
 
-Look at the entire image. Assign exactly one classification:
+Assign exactly one classification:
+- valid_troy_build
+- unclear_image
+- non_troy_image
 
-"valid_troy_build"
-→ 2 or more Troy wooden blocks clearly and deliberately arranged into a structure. Material and shapes must be unambiguous.
+If ANY doubt exists, choose unclear_image.
 
-"unclear_image"
-→ Blurry, too dark, too cropped, only one block visible, or you cannot clearly confirm the blocks are Troy wooden. When in doubt, use this.
+## STEP 2 — IF VALID, ANALYZE STRICTLY
 
-"non_troy_image"
-→ Clearly shows something other than Troy wooden blocks.
+Use only what is literally visible.
+Do not hallucinate hidden blocks.
+Do not guess beyond what the image supports.
 
----
+Return ONLY raw JSON.
 
-## STEP 2 — SELF CHECK
-
-Before writing any output, answer these internally:
-1. Can I see at least 2 blocks clearly?
-2. Do the blocks look like solid matte wood (not plastic or foam)?
-3. Are the shapes simple geometric solids with no studs, connectors, or prints?
-4. Is this a deliberate build — not just scattered blocks?
-5. Am I at least 85% confident this is a Troy wooden block build?
-
-If ANY answer is NO → use "unclear_image" or "non_troy_image". Never force a valid classification when uncertain.
-
----
-
-## STEP 3 — VISUAL DESCRIPTION (critical — do this before naming)
-
-If classification is "valid_troy_build", you MUST do this before deciding the build name:
-
-Describe ONLY what you literally see in the image:
-- What is the overall silhouette or outline of the build? (tall and thin? wide and low? has a bump on top? has legs?)
-- How are the blocks physically arranged? (stacked vertically, spread horizontally, arch on top, blocks sticking out to the sides?)
-- Are there any protruding parts, neck-like sections, leg-like sections, or roof-like sections?
-- What does the overall shape remind you of when you look at it as a whole?
-
-This raw visual description drives everything else. You are NOT allowed to guess the name before completing this.
-
----
-
-## STEP 4 — SHAPE-BASED NAMING
-
-Using ONLY your visual description from STEP 3, decide:
-
-build_name
-→ A short imaginative name (max 6 words) based on what the overall silhouette and shape actually looks like.
-→ Common build shapes children make: tower, castle, house, bridge, car, train, rocket, robot, giraffe, dog, dinosaur, gate, wall, throne, barn, lighthouse, crane, boat.
-→ If the build has a tall narrow section on top of a wide base → could be a giraffe, lighthouse, rocket, or tower.
-→ If it has 4 leg-like protrusions and a body → could be a dog, horse, or table.
-→ If it has a wide flat base with an arch → could be a bridge or gate.
-→ NEVER name it something that contradicts your visual description. If your description says "tall narrow neck on a wide base" — do NOT call it a chair.
-
-build_category
-→ Exactly one of: "tower", "bridge", "house", "vehicle", "abstract", "enclosure", "animal", "other"
-→ "animal" is now a valid category — use it when the build resembles a living creature.
-
----
-
-## STEP 5 — FULL ANALYSIS
-
-Provide all of the following:
-
-block_count
-→ Integer. Count every visible block including partially hidden ones you can clearly infer.
-
-identified_shapes
-→ List every distinct block shape TYPE you can see. Only include shapes you can actually confirm.
-→ Choose from: "cube", "rectangular_prism", "cylinder", "arch", "triangular_prism", "semicircle", "cone", "square", "other"
-
-complexity_level
-→ Exactly one of:
-  "simple"  → 1–4 blocks
-  "medium"  → 5–10 blocks
-  "complex" → 11+ blocks
-
-stability_rating
-→ Exactly one of:
-  "stable"           → Wide base, low center of gravity, well-aligned
-  "somewhat_stable"  → Moderate balance, some risk of toppling
-  "precarious"       → Narrow base, tall, or visibly unbalanced
-
-color_observations
-→ List only the colors you can actually see on the blocks.
-→ Example: ["natural wood", "red", "blue"]
-
-spatial_observations
-→ 1–2 sentences describing the literal physical arrangement — where blocks are placed relative to each other, what sticks out, what the silhouette looks like. Be precise and factual.
-
-visual_reasoning
-→ 1 sentence explaining WHY you named it what you did, based on the shape you saw.
-→ Example: "Named 'Tall Giraffe Tower' because the build has a wide rectangular base with a long narrow vertical stack rising from one end, resembling a giraffe's body and neck."
-
-developmental_feedback
-→ 2–3 warm, encouraging sentences for the child. Reference specific shapes and arrangements you can actually see. Never generic — always tied to what's visible.
-
-suggestions
-→ Exactly 2 concrete, age-appropriate suggestions for extending the build. Reference the current structure.
-
----
-
-## OUTPUT FORMAT
-
-Single raw JSON object only. No prose, no markdown, no explanation outside the JSON.
-
-If "valid_troy_build":
+If valid_troy_build:
 {
   "classification": "valid_troy_build",
   "build_name": "...",
-  "block_count": <integer>,
+  "block_count": 0,
   "identified_shapes": ["..."],
   "build_category": "...",
   "complexity_level": "...",
@@ -212,27 +121,18 @@ If "valid_troy_build":
   "suggestions": ["...", "..."]
 }
 
-If "unclear_image":
+If unclear_image:
 {
   "classification": "unclear_image",
   "message": "The photo is too unclear to analyze. Please try again with better lighting, move back slightly so all the blocks are in frame, and make sure the image is in focus."
 }
 
-If "non_troy_image":
+If non_troy_image:
 {
   "classification": "non_troy_image",
   "message": "This doesn't appear to be a Troy wooden block build. Please upload a photo of a structure built with Troy wooden blocks."
 }
-
----
-
-ABSOLUTE RULES:
-- Complete STEP 3 visual description internally before deciding the build_name
-- The build_name must be consistent with spatial_observations and visual_reasoning
-- Never name something that contradicts what you described seeing
-- Never output anything outside the JSON
-- Never invent details you cannot see
-- Your JSON must be valid — no trailing commas, no comments"""
+"""
 
 # ---------------------------------------------------------------------------
 # Schemas
@@ -254,18 +154,18 @@ class ValidBuildResponse:
 
     def to_dict(self) -> dict[str, Any]:
         return {
-            "classification":        self.classification,
-            "build_name":            self.build_name,
-            "block_count":           self.block_count,
-            "identified_shapes":     self.identified_shapes,
-            "build_category":        self.build_category,
-            "complexity_level":      self.complexity_level,
-            "stability_rating":      self.stability_rating,
-            "color_observations":    self.color_observations,
-            "spatial_observations":  self.spatial_observations,
-            "visual_reasoning":      self.visual_reasoning,
+            "classification": self.classification,
+            "build_name": self.build_name,
+            "block_count": self.block_count,
+            "identified_shapes": self.identified_shapes,
+            "build_category": self.build_category,
+            "complexity_level": self.complexity_level,
+            "stability_rating": self.stability_rating,
+            "color_observations": self.color_observations,
+            "spatial_observations": self.spatial_observations,
+            "visual_reasoning": self.visual_reasoning,
             "developmental_feedback": self.developmental_feedback,
-            "suggestions":           self.suggestions,
+            "suggestions": self.suggestions,
         }
 
 
@@ -312,14 +212,12 @@ def preprocess_image(raw_bytes: bytes, mime_type: str) -> tuple[str, str]:
     img = Image.open(BytesIO(raw_bytes))
     img = _auto_rotate(img)
 
-    # Upscale very small images
     min_dim = min(img.width, img.height)
     if min_dim < 512:
         scale = 512 / min_dim
         new_size = (int(img.width * scale), int(img.height * scale))
         img = img.resize(new_size, Image.LANCZOS)
 
-    # Downscale very large images
     max_dim = max(img.width, img.height)
     if max_dim > MAX_IMAGE_DIMENSION:
         scale = MAX_IMAGE_DIMENSION / max_dim
@@ -328,7 +226,6 @@ def preprocess_image(raw_bytes: bytes, mime_type: str) -> tuple[str, str]:
 
     img = _enhance_image(img)
 
-    # Normalize to RGB
     if img.mode in ("RGBA", "P", "LA"):
         background = Image.new("RGB", img.size, (255, 255, 255))
         if img.mode == "P":
@@ -388,7 +285,6 @@ def call_groq_vision(b64_image: str, media_type: str) -> dict[str, Any]:
     raw_text = response.choices[0].message.content.strip()
     logger.info("Raw Groq response: %s", raw_text[:500])
 
-    # Strip markdown fences if present
     if raw_text.startswith("```"):
         parts = raw_text.split("```")
         raw_text = parts[1] if len(parts) > 1 else raw_text
@@ -396,7 +292,6 @@ def call_groq_vision(b64_image: str, media_type: str) -> dict[str, Any]:
             raw_text = raw_text[4:]
         raw_text = raw_text.strip()
 
-    # Extract JSON object if there's stray text around it
     start = raw_text.find("{")
     end = raw_text.rfind("}") + 1
     if start != -1 and end > start:
@@ -423,7 +318,6 @@ def validate_and_build(raw: dict[str, Any]) -> ValidBuildResponse | GatedRespons
             raise ValueError(f"Missing 'message' for '{classification}'.")
         return GatedResponse(classification=classification, message=message.strip())
 
-    # valid_troy_build
     required_fields = [
         "build_name", "block_count", "identified_shapes",
         "build_category", "complexity_level", "stability_rating",
@@ -465,8 +359,8 @@ def validate_and_build(raw: dict[str, Any]) -> ValidBuildResponse | GatedRespons
         color_observations = []
     color_observations = [str(c).strip() for c in color_observations if str(c).strip()]
 
-    spatial_observations  = str(raw["spatial_observations"]).strip()
-    visual_reasoning      = str(raw["visual_reasoning"]).strip()
+    spatial_observations = str(raw["spatial_observations"]).strip()
+    visual_reasoning = str(raw["visual_reasoning"]).strip()
     developmental_feedback = str(raw["developmental_feedback"]).strip()
     if not developmental_feedback:
         raise ValueError("'developmental_feedback' must not be empty.")
@@ -506,17 +400,13 @@ def require_image_upload(f):
         mime_type = file.content_type or ""
         if mime_type not in ALLOWED_MIME_TYPES:
             return error_response(
-                f"Unsupported image type '{mime_type}'. "
-                f"Accepted: {', '.join(sorted(ALLOWED_MIME_TYPES))}",
+                f"Unsupported image type '{mime_type}'. Accepted: {', '.join(sorted(ALLOWED_MIME_TYPES))}",
                 HTTPStatus.UNSUPPORTED_MEDIA_TYPE,
             )
         return f(*args, image_bytes=file.read(), mime_type=mime_type, **kwargs)
     return wrapper
 
 
-# ---------------------------------------------------------------------------
-# Error helper
-# ---------------------------------------------------------------------------
 def error_response(message: str, status: int) -> tuple[Response, int]:
     return jsonify({"error": message}), status
 
@@ -567,9 +457,6 @@ def analyze(image_bytes: bytes, mime_type: str) -> tuple[Response, int]:
     return jsonify(result.to_dict()), HTTPStatus.OK
 
 
-# ---------------------------------------------------------------------------
-# Entry point
-# ---------------------------------------------------------------------------
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     debug = os.environ.get("FLASK_DEBUG", "false").lower() == "true"
