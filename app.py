@@ -258,12 +258,12 @@ def preprocess_image(raw_bytes: bytes, mime_type: str) -> tuple[bytes, str]:
 
 
 def call_gemini_vision(image_bytes: bytes, media_type: str) -> dict[str, Any]:
-    import google.generativeai.types as gtypes
-    image_part = gtypes.BlobPart(data=image_bytes, mime_type=media_type)
+    image_part = {"mime_type": media_type, "data": image_bytes}
     response = gemini_model.generate_content(
         contents=[image_part, SYSTEM_PROMPT],
         generation_config=genai.GenerationConfig(temperature=0.0, max_output_tokens=1200, top_p=1.0),
     )
+    
     raw_text = response.text.strip()
     logger.info("Raw Gemini response: %s", raw_text[:500])
     if raw_text.startswith("```"):
