@@ -54,6 +54,45 @@ VALID_CATEGORIES = {"tower", "bridge", "house", "vehicle", "abstract", "enclosur
 VALID_COMPLEXITY = {"simple", "medium", "complex"}
 VALID_STABILITY = {"stable", "somewhat_stable", "precarious"}
 
+CATEGORY_ALIASES = {
+    "furniture": "other",
+    "chair": "other",
+    "table": "other",
+    "seat": "other",
+    "building": "other",
+    "structure": "other",
+    "object": "other",
+}
+
+COMPLEXITY_ALIASES = {
+    "simple": "simple",
+    "easy": "simple",
+    "basic": "simple",
+    "medium": "medium",
+    "moderate": "medium",
+    "intermediate": "medium",
+    "complex": "complex",
+    "advanced": "complex",
+}
+
+STABILITY_ALIASES = {
+    "stable": "stable",
+    "high": "stable",
+    "good": "stable",
+    "strong": "stable",
+
+    "somewhat_stable": "somewhat_stable",
+    "medium": "somewhat_stable",
+    "moderate": "somewhat_stable",
+    "fair": "somewhat_stable",
+
+    "precarious": "precarious",
+    "low": "precarious",
+    "unstable": "precarious",
+    "weak": "precarious",
+    "risky": "precarious",
+}
+
 # ---------------------------------------------------------------------------
 # Prompt
 # ---------------------------------------------------------------------------
@@ -90,26 +129,92 @@ Classify as non_troy_image if you see:
 
 ## STEP 1 — CLASSIFY
 
-Assign exactly one classification:
-- valid_troy_build
-- unclear_image
-- non_troy_image
+Look at the entire image. Assign exactly one classification:
 
-If ANY doubt exists, choose unclear_image.
+"valid_troy_build"
+→ 2 or more Troy wooden blocks clearly and deliberately arranged into a structure. Material and shapes must be unambiguous.
 
-## STEP 2 — IF VALID, ANALYZE STRICTLY
+"unclear_image"
+→ Blurry, too dark, too cropped, only one block visible, or you cannot clearly confirm the blocks are Troy wooden. When in doubt, use this.
 
-Use only what is literally visible.
-Do not hallucinate hidden blocks.
-Do not guess beyond what the image supports.
+"non_troy_image"
+→ Clearly shows something other than Troy wooden blocks.
 
-Return ONLY raw JSON.
+## STEP 2 — SELF CHECK
 
-If valid_troy_build:
+Before writing any output, answer these internally:
+1. Can I see at least 2 blocks clearly?
+2. Do the blocks look like solid matte wood (not plastic or foam)?
+3. Are the shapes simple geometric solids with no studs, connectors, or prints?
+4. Is this a deliberate build — not just scattered blocks?
+5. Am I at least 85% confident this is a Troy wooden block build?
+
+If ANY answer is NO → use "unclear_image" or "non_troy_image". Never force a valid classification when uncertain.
+
+## STEP 3 — VISUAL DESCRIPTION
+
+If classification is "valid_troy_build", internally describe ONLY what you literally see:
+- overall silhouette
+- how blocks are arranged
+- protruding parts, leg-like sections, roof-like sections
+- what the whole shape reminds you of
+
+Do NOT guess the name before completing this internal visual description.
+
+## STEP 4 — SHAPE-BASED NAMING
+
+Using ONLY the visual description:
+- choose a short build_name (max 6 words)
+- choose a build_category
+
+build_category
+→ You MUST return exactly one of:
+"tower", "bridge", "house", "vehicle", "abstract", "enclosure", "animal", "other"
+→ Do not return furniture, chair, object, building, structure, or anything else.
+
+complexity_level
+→ You MUST return exactly one of:
+"simple", "medium", "complex"
+→ Do not return basic, moderate, intermediate, advanced, or capitalized variants.
+
+stability_rating
+→ You MUST return exactly one of:
+"stable", "somewhat_stable", "precarious"
+→ Do not return low, medium, high, unstable, weak, or good.
+
+## STEP 5 — FULL ANALYSIS
+
+block_count
+→ Integer. Count every visible block including partially hidden ones you can clearly infer.
+
+identified_shapes
+→ List every distinct block shape TYPE you can see.
+→ Choose from: "cube", "rectangular_prism", "cylinder", "arch", "triangular_prism", "semicircle", "cone", "square", "other"
+
+color_observations
+→ List only the colors you can actually see on the blocks.
+
+spatial_observations
+→ 1–2 sentences describing the literal physical arrangement.
+
+visual_reasoning
+→ 1 sentence explaining WHY you named it what you did, based on the shape you saw.
+
+developmental_feedback
+→ 2–3 warm, encouraging sentences for the child.
+
+suggestions
+→ Exactly 2 concrete, age-appropriate suggestions for extending the build.
+
+## OUTPUT FORMAT
+
+Single raw JSON object only. No prose, no markdown, no explanation outside the JSON.
+
+If "valid_troy_build":
 {
   "classification": "valid_troy_build",
   "build_name": "...",
-  "block_count": 0,
+  "block_count": <integer>,
   "identified_shapes": ["..."],
   "build_category": "...",
   "complexity_level": "...",
@@ -121,17 +226,23 @@ If valid_troy_build:
   "suggestions": ["...", "..."]
 }
 
-If unclear_image:
+If "unclear_image":
 {
   "classification": "unclear_image",
   "message": "The photo is too unclear to analyze. Please try again with better lighting, move back slightly so all the blocks are in frame, and make sure the image is in focus."
 }
 
-If non_troy_image:
+If "non_troy_image":
 {
   "classification": "non_troy_image",
   "message": "This doesn't appear to be a Troy wooden block build. Please upload a photo of a structure built with Troy wooden blocks."
 }
+
+ABSOLUTE RULES:
+- build_name must match the visible shape
+- never invent details you cannot see
+- if unsure, do not classify as valid_troy_build
+- output valid JSON only
 """
 
 # ---------------------------------------------------------------------------
@@ -176,6 +287,26 @@ class GatedResponse:
 
     def to_dict(self) -> dict[str, Any]:
         return {"classification": self.classification, "message": self.message}
+
+
+# ---------------------------------------------------------------------------
+# Normalizers
+# ---------------------------------------------------------------------------
+def normalize_category(value: Any) -> str:
+    value = str(value).lower().strip()
+    if value in VALID_CATEGORIES:
+        return value
+    return CATEGORY_ALIASES.get(value, "other")
+
+
+def normalize_complexity(value: Any) -> str:
+    value = str(value).lower().strip()
+    return COMPLEXITY_ALIASES.get(value, value)
+
+
+def normalize_stability(value: Any) -> str:
+    value = str(value).lower().strip()
+    return STABILITY_ALIASES.get(value, value)
 
 
 # ---------------------------------------------------------------------------
@@ -342,17 +473,15 @@ def validate_and_build(raw: dict[str, Any]) -> ValidBuildResponse | GatedRespons
         raise ValueError("'identified_shapes' must be a non-empty list.")
     identified_shapes = [str(s).lower().strip() for s in identified_shapes]
 
-    build_category = str(raw["build_category"]).lower().strip()
-    if build_category not in VALID_CATEGORIES:
-        build_category = "other"
+    build_category = normalize_category(raw["build_category"])
 
-    complexity_level = str(raw["complexity_level"]).lower().strip()
+    complexity_level = normalize_complexity(raw["complexity_level"])
     if complexity_level not in VALID_COMPLEXITY:
-        raise ValueError(f"'complexity_level' must be one of {VALID_COMPLEXITY}.")
+        raise ValueError(f"'complexity_level' must be one of {VALID_COMPLEXITY}, got: {raw['complexity_level']!r}")
 
-    stability_rating = str(raw["stability_rating"]).lower().strip()
+    stability_rating = normalize_stability(raw["stability_rating"])
     if stability_rating not in VALID_STABILITY:
-        raise ValueError(f"'stability_rating' must be one of {VALID_STABILITY}.")
+        raise ValueError(f"'stability_rating' must be one of {VALID_STABILITY}, got: {raw['stability_rating']!r}")
 
     color_observations = raw.get("color_observations", [])
     if not isinstance(color_observations, list):
@@ -407,6 +536,9 @@ def require_image_upload(f):
     return wrapper
 
 
+# ---------------------------------------------------------------------------
+# Error helper
+# ---------------------------------------------------------------------------
 def error_response(message: str, status: int) -> tuple[Response, int]:
     return jsonify({"error": message}), status
 
@@ -457,6 +589,9 @@ def analyze(image_bytes: bytes, mime_type: str) -> tuple[Response, int]:
     return jsonify(result.to_dict()), HTTPStatus.OK
 
 
+# ---------------------------------------------------------------------------
+# Entry point
+# ---------------------------------------------------------------------------
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     debug = os.environ.get("FLASK_DEBUG", "false").lower() == "true"
