@@ -18,11 +18,11 @@ app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 10 * 1024 * 1024
 
 genai.configure(api_key=os.environ.get("GEMINI_API_KEY", ""))
-gemini_model = genai.GenerativeModel("gemini-2.5-flash-preview-04-17")
+gemini_model = genai.GenerativeModel("gemini-2.0-flash")
 
 ALLOWED_MIME_TYPES    = {"image/jpeg", "image/png", "image/webp", "image/gif"}
 MAX_IMAGE_DIMENSION   = 2048
-MODEL_NAME            = "gemini-2.5-flash-preview-04-17"
+MODEL_NAME = "gemini-2.0-flash"
 VALID_CLASSIFICATIONS = {"valid_troy_build", "unclear_image", "non_troy_image"}
 VALID_CATEGORIES      = {"tower", "bridge", "house", "vehicle", "abstract", "enclosure", "animal", "other"}
 VALID_COMPLEXITY      = {"simple", "medium", "complex"}
