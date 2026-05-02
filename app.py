@@ -32,11 +32,14 @@ logger = logging.getLogger("troy_analyzer")
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 10 * 1024 * 1024
 
+from flask_cors import CORS
+CORS(app, origins=["https://troy-frontend-alpha.vercel.app", "http://localhost:3000"])
+
 groq_client = Groq(api_key=os.environ.get("GROQ_API_KEY", ""))
 
 ALLOWED_MIME_TYPES    = {"image/jpeg", "image/png", "image/webp", "image/gif"}
 MAX_IMAGE_DIMENSION   = 2048
-GROQ_MODEL = "meta-llama/llama-4-scout-17b-16e-instruct"
+GROQ_MODEL            = "meta-llama/llama-4-scout-17b-16e-instruct"
 
 VALID_CLASSIFICATIONS = {"valid_troy_build", "unclear_image", "non_troy_image"}
 VALID_CATEGORIES      = {"tower", "bridge", "house", "vehicle", "abstract", "enclosure", "animal", "other"}
