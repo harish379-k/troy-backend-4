@@ -3,6 +3,7 @@ import json
 import uuid
 import base64
 import hashlib
+import random
 from io import BytesIO
 from pathlib import Path
 from collections import OrderedDict
@@ -27,21 +28,18 @@ load_dotenv(BASE_DIR / ".env")
 
 app = Flask(__name__)
 
-# IMPORTANT: prevents huge images from killing Render memory
-app.config["MAX_CONTENT_LENGTH"] = 4 * 1024 * 1024  # 4 MB upload limit
+# Prevent huge images from killing Render memory
+app.config["MAX_CONTENT_LENGTH"] = 4 * 1024 * 1024  # 4 MB
 
 CORS_ORIGINS = os.environ.get("CORS_ORIGINS", "*")
 CORS(app, origins=CORS_ORIGINS.split(","))
 
 ALLOWED_EXTENSIONS = {"png", "jpg", "jpeg", "webp"}
 
-# Keep this low to avoid Render out-of-memory
+# Keep low for Render free tier
 MAX_BASE64_IMAGE_SIZE = 1_800_000
-
-# Avoid PIL decompression bomb memory issues
 Image.MAX_IMAGE_PIXELS = 15_000_000
 
-# Limited in-memory cache
 analysis_cache = OrderedDict()
 MAX_CACHE_ITEMS = 30
 
@@ -89,9 +87,9 @@ def build_gemini_model():
     return genai.GenerativeModel(
         get_gemini_model(),
         generation_config={
-            "temperature": 0.55,
+            "temperature": 0.75,
             "top_p": 0.95,
-            "max_output_tokens": 1300
+            "max_output_tokens": 1500
         }
     )
 
@@ -167,11 +165,7 @@ def ensure_list(value, fallback=None, limit=3):
 
 def safe_get_dict(data, key):
     value = data.get(key)
-
-    if isinstance(value, dict):
-        return value
-
-    return {}
+    return value if isinstance(value, dict) else {}
 
 
 def extract_json_block(text):
@@ -182,7 +176,6 @@ def extract_json_block(text):
 
     if text.startswith("```"):
         lines = text.splitlines()
-
         if len(lines) >= 3:
             text = "\n".join(lines[1:-1]).strip()
 
@@ -202,7 +195,6 @@ def parse_json_response(text):
 
 def is_rate_limit_error(error_text):
     lower = error_text.lower()
-
     return (
         "429" in lower
         or "rate limit" in lower
@@ -214,7 +206,6 @@ def is_rate_limit_error(error_text):
 
 def is_invalid_key_error(error_text):
     lower = error_text.lower()
-
     return (
         "401" in lower
         or "403" in lower
@@ -227,7 +218,6 @@ def is_invalid_key_error(error_text):
 
 def is_temporary_error(error_text):
     lower = error_text.lower()
-
     return (
         "500" in lower
         or "502" in lower
@@ -238,7 +228,7 @@ def is_temporary_error(error_text):
 
 
 # =========================================================
-# Image processing helpers
+# Image processing
 # =========================================================
 
 def encode_image_to_base64_jpeg(img, quality):
@@ -251,12 +241,10 @@ def encode_image_to_base64_jpeg(img, quality):
 
 def prepare_image_for_models(image_file):
     """
-    Converts upload into:
-    1. Small PIL image for Gemini
-    2. Small base64 data URL for Groq
-    3. SHA hash for cache
-
-    This is memory-safe for Render free tier.
+    Returns:
+    1. PIL image for Gemini
+    2. Base64 image data URL for Groq
+    3. SHA hash for cache and feedback variation
     """
 
     img = Image.open(image_file.stream)
@@ -281,7 +269,7 @@ def prepare_image_for_models(image_file):
 
             return pil_img, data_url, image_hash
 
-    # More aggressive compression
+    # More aggressive fallback
     img.thumbnail((700, 700))
 
     for quality in [60, 50, 40, 35]:
@@ -303,10 +291,77 @@ def prepare_image_for_models(image_file):
 
 
 # =========================================================
+# Creativity variation helpers
+# =========================================================
+
+def pick_feedback_style(image_hash):
+    """
+    Picks a consistent creative feedback angle for each image.
+    Same image = same style because cache/feedback should stay stable.
+    Different image = likely different analysis style.
+    """
+
+    styles = [
+        {
+            "name": "story-builder",
+            "instruction": "Focus on what story or pretend-play world this build could become."
+        },
+        {
+            "name": "designer",
+            "instruction": "Focus on the child's design choices, shape choices, and arrangement."
+        },
+        {
+            "name": "builder-engineer",
+            "instruction": "Focus on balance, support, structure, levels, and how parts hold together."
+        },
+        {
+            "name": "inventor",
+            "instruction": "Focus on unusual combinations, hybrid ideas, and creative object guessing."
+        },
+        {
+            "name": "architect",
+            "instruction": "Focus on spaces, floors, openings, rooms, height, and layout."
+        },
+        {
+            "name": "movement-maker",
+            "instruction": "Focus on whether the build suggests motion, wheels, paths, vehicles, or travel."
+        },
+        {
+            "name": "pattern-finder",
+            "instruction": "Focus on repeated blocks, symmetry, spacing, rhythm, and visual patterns."
+        }
+    ]
+
+    seed_number = int(image_hash[:8], 16)
+    return styles[seed_number % len(styles)]
+
+
+def build_unique_hint(image_hash):
+    """
+    Adds a small non-secret variation token so the model avoids repeating
+    the exact same wording for every upload.
+    """
+
+    openings = [
+        "Use fresh wording for this image.",
+        "Avoid repeating common phrases from previous analyses.",
+        "Make this feedback feel specific to this exact build.",
+        "Describe this as if seeing the child's build for the first time.",
+        "Let the visible shapes guide the guess."
+    ]
+
+    seed_number = int(image_hash[8:16], 16)
+    return openings[seed_number % len(openings)]
+
+
+# =========================================================
 # Prompt
 # =========================================================
 
-def build_troy_prompt(age):
+def build_troy_prompt(age, image_hash):
+    style = pick_feedback_style(image_hash)
+    unique_hint = build_unique_hint(image_hash)
+
     return f"""
 You are Troy AI Analyzer.
 
@@ -315,8 +370,14 @@ You are analyzing one uploaded image of a child's Troy wooden-block build.
 Child age:
 {age if age else "unknown"}
 
+Feedback style for this image:
+{style["name"]} — {style["instruction"]}
+
+Uniqueness instruction:
+{unique_hint}
+
 Goal:
-Give feedback similar to how a careful human teacher would look at the photo.
+Give feedback like a careful, creative human teacher who is looking at this exact photo.
 
 Important rules:
 - Look at the whole image first.
@@ -325,18 +386,39 @@ Important rules:
 - If it looks like a hybrid idea, describe the hybrid naturally.
   Examples:
   moving house, house-on-wheels, bridge-house, layered building,
-  castle gate, pretend-play scene, animal-like vehicle, abstract machine.
+  castle gate, pretend-play scene, animal-like vehicle, abstract machine,
+  raised platform, tiny city, block vehicle with a room, walking creature,
+  parking garage, lookout post, tunnel path, stage, playground structure.
 - If it has floors or sections going upward, do not automatically call it a tower.
-  It may be a multi-level building, layered structure, raised house, or pretend-play scene.
-- Base every statement only on visible details.
+  It may be a multi-level building, layered structure, raised house, platform scene,
+  parking-garage-like build, lookout station, or pretend-play setup.
+- If the child combines multiple ideas, mention the combination.
+  Example: "It looks like a little moving home because it has a base that feels vehicle-like and a top section that feels like a room."
+- Base every sentence only on visible details.
 - Mention visible parts such as base, floors, levels, gaps, supports,
   repeated blocks, stacked sections, roof-like pieces, wheel-like parts,
-  curved pieces, openings, or loose blocks if visible.
+  curved pieces, openings, paths, bridges, rooms, platforms, loose blocks,
+  or upper/lower sections if visible.
 - If the image is not a Troy/block build, mark it invalid.
 - If you are unsure, use cautious phrases like "looks like", "could be", or "seems to".
-- Keep the tone simple, warm, and parent-friendly.
+- Keep the tone simple, warm, parent-friendly, and encouraging.
 - Do not overclaim.
+- Avoid generic repeated phrases like:
+  "The child practiced creativity",
+  "The child learned problem solving",
+  "The child used imagination",
+  unless you connect them to a visible detail.
+- Each learning card must mention something specific from the build.
+- Make every title and description feel unique to this photo.
 - Return JSON only.
+
+Creativity level:
+Be more creative in the guess, but stay grounded in visible evidence.
+A good guess can be playful, such as:
+"mini treehouse platform", "moving house", "block spaceship base",
+"tiny garage", "bridge-home", "castle entrance", "layered lookout tower",
+"animal-like machine", or "pretend city corner",
+but only if the visible image supports it.
 
 Return this exact JSON shape:
 
@@ -350,7 +432,7 @@ Return this exact JSON shape:
   }},
   "whatWeFound": {{
     "title": "What we found",
-    "summary": "2 short sentences describing the visible build"
+    "summary": "2 short sentences describing the visible build with unique details"
   }},
   "whatTheyLearned": [
     {{
@@ -394,10 +476,236 @@ Rules for invalid image:
 
 
 # =========================================================
-# Response normalization
+# Better fallback feedback
 # =========================================================
 
-def normalize_learning_cards(cards):
+def contains_any(text, words):
+    text = text.lower()
+    return any(word in text for word in words)
+
+
+def build_context_text(build_guess, summary, noticed):
+    return " ".join([
+        clean_text(build_guess.get("title", "")),
+        clean_text(build_guess.get("subtitle", "")),
+        clean_text(summary),
+        " ".join(noticed or [])
+    ]).lower()
+
+
+def creative_fallback_cards(build_guess, summary, noticed, image_hash):
+    """
+    Used only when AI gives weak/missing learning cards.
+    These cards are generated from the actual guess + observations,
+    so they are less repetitive than fixed generic cards.
+    """
+
+    context = build_context_text(build_guess, summary, noticed)
+    main_detail = noticed[0] if noticed else "the visible block arrangement"
+
+    card_pool = []
+
+    if contains_any(context, ["level", "floor", "platform", "layer", "upper", "lower"]):
+        card_pool.extend([
+            {
+                "title": "Layered Building",
+                "description": f"The child explored how one part can sit above another, especially around {main_detail}.",
+                "color": "cream"
+            },
+            {
+                "title": "Vertical Planning",
+                "description": "The build shows early thinking about how lower sections can support upper sections.",
+                "color": "green"
+            }
+        ])
+
+    if contains_any(context, ["wheel", "vehicle", "moving", "car", "base", "travel"]):
+        card_pool.extend([
+            {
+                "title": "Movement Thinking",
+                "description": "The child connected the block shape to the idea of something that could move or travel.",
+                "color": "cream"
+            },
+            {
+                "title": "Part-to-Whole Design",
+                "description": "The child explored how a base and top section can work together as one bigger idea.",
+                "color": "green"
+            }
+        ])
+
+    if contains_any(context, ["house", "room", "roof", "home", "door", "window"]):
+        card_pool.extend([
+            {
+                "title": "Space Making",
+                "description": "The child used blocks to suggest a small space, room, or home-like area.",
+                "color": "cream"
+            },
+            {
+                "title": "Pretend-Play Planning",
+                "description": "The build can become part of a story about who lives there or what happens inside.",
+                "color": "blue"
+            }
+        ])
+
+    if contains_any(context, ["bridge", "gap", "span", "across", "support"]):
+        card_pool.extend([
+            {
+                "title": "Support and Span",
+                "description": "The child explored how blocks can reach across a space or rest on supports.",
+                "color": "cream"
+            },
+            {
+                "title": "Testing Stability",
+                "description": "The build invites the child to test which parts stay steady and which parts need support.",
+                "color": "green"
+            }
+        ])
+
+    if contains_any(context, ["curve", "arch", "opening", "gate", "entrance", "tunnel"]):
+        card_pool.extend([
+            {
+                "title": "Open-Space Design",
+                "description": "The child explored how blocks can create an opening, entrance, or pass-through space.",
+                "color": "cream"
+            },
+            {
+                "title": "Shape Experimenting",
+                "description": "The build shows curiosity about how different shapes can create a new form.",
+                "color": "green"
+            }
+        ])
+
+    if contains_any(context, ["repeat", "same", "pattern", "symmetry", "line"]):
+        card_pool.extend([
+            {
+                "title": "Pattern Spotting",
+                "description": "The child used repeated placement to make the build feel more organized.",
+                "color": "cream"
+            },
+            {
+                "title": "Visual Rhythm",
+                "description": "The repeated block choices help the child notice spacing and arrangement.",
+                "color": "green"
+            }
+        ])
+
+    if contains_any(context, ["animal", "creature", "head", "legs", "tail", "body"]):
+        card_pool.extend([
+            {
+                "title": "Symbolic Thinking",
+                "description": "The child used simple block shapes to suggest a living thing or creature.",
+                "color": "cream"
+            },
+            {
+                "title": "Story Imagination",
+                "description": "The animal-like form can become a character in the child's pretend play.",
+                "color": "blue"
+            }
+        ])
+
+    if contains_any(context, ["tower", "stack", "tall", "height", "vertical"]):
+        card_pool.extend([
+            {
+                "title": "Height Control",
+                "description": "The child explored how the build changes when pieces are placed higher.",
+                "color": "cream"
+            },
+            {
+                "title": "Careful Stacking",
+                "description": "Placing blocks upward helps the child practice patience and hand control.",
+                "color": "green"
+            }
+        ])
+
+    # Always add some creative non-generic choices
+    card_pool.extend([
+        {
+            "title": "Idea Combining",
+            "description": f"The child connected visible parts like {main_detail} into one larger build idea.",
+            "color": "cream"
+        },
+        {
+            "title": "Design Choices",
+            "description": "The child made choices about where blocks should go, what should be higher, and what should connect.",
+            "color": "green"
+        },
+        {
+            "title": "Story Building",
+            "description": "The structure can become a small pretend world that the child can explain in their own words.",
+            "color": "blue"
+        },
+        {
+            "title": "Spatial Reasoning",
+            "description": "The child practiced thinking about beside, above, under, across, and connected spaces.",
+            "color": "cream"
+        }
+    ])
+
+    # Pick varied cards based on image hash
+    seed_number = int(image_hash[:10], 16)
+    random.Random(seed_number).shuffle(card_pool)
+
+    selected = []
+    used_titles = set()
+
+    for card in card_pool:
+        title_key = card["title"].lower()
+        if title_key in used_titles:
+            continue
+
+        selected.append(card)
+        used_titles.add(title_key)
+
+        if len(selected) == 3:
+            break
+
+    colors = ["cream", "green", "blue"]
+    for i, card in enumerate(selected):
+        card["color"] = colors[i]
+
+    return selected
+
+
+def is_weak_learning_card(card):
+    title = clean_text(card.get("title")).lower()
+    description = clean_text(card.get("description")).lower()
+
+    if not title or not description:
+        return True
+
+    if len(description.split()) < 8:
+        return True
+
+    too_generic_titles = {
+        "creativity",
+        "imagination",
+        "problem solving",
+        "motor skills",
+        "engineering",
+        "stem learning",
+        "critical thinking"
+    }
+
+    evidence_words = [
+        "block", "base", "level", "floor", "support", "gap", "roof",
+        "wheel", "curve", "arch", "opening", "bridge", "stack",
+        "repeated", "path", "platform", "room", "shape", "piece"
+    ]
+
+    if title in too_generic_titles:
+        return not any(word in description for word in evidence_words)
+
+    repeated_phrases = [
+        "used creativity",
+        "improved problem solving",
+        "used imagination",
+        "developed motor skills"
+    ]
+
+    return any(phrase in description for phrase in repeated_phrases)
+
+
+def normalize_learning_cards(cards, build_guess, summary, noticed, image_hash):
     allowed_colors = ["cream", "green", "blue"]
     cleaned = []
 
@@ -416,35 +724,29 @@ def normalize_learning_cards(cards):
             if color not in allowed_colors:
                 color = allowed_colors[index % 3]
 
-            cleaned.append({
+            temp_card = {
                 "title": title,
                 "description": description,
                 "color": color
-            })
+            }
 
-    fallback = [
-        {
-            "title": "Block Placement",
-            "description": "The child practiced deciding where each block should go.",
-            "color": "cream"
-        },
-        {
-            "title": "Balance and Structure",
-            "description": "The child explored how blocks can stay steady together.",
-            "color": "green"
-        },
-        {
-            "title": "Creative Thinking",
-            "description": "The child turned an idea into a physical build.",
-            "color": "blue"
-        }
-    ]
+            # Skip weak generic AI cards
+            if is_weak_learning_card(temp_card):
+                continue
 
-    for item in fallback:
+            cleaned.append(temp_card)
+
+    fallback_cards = creative_fallback_cards(build_guess, summary, noticed, image_hash)
+
+    existing_titles = {card["title"].lower() for card in cleaned}
+
+    for fallback in fallback_cards:
         if len(cleaned) >= 3:
             break
 
-        cleaned.append(item)
+        if fallback["title"].lower() not in existing_titles:
+            cleaned.append(fallback)
+            existing_titles.add(fallback["title"].lower())
 
     for i, card in enumerate(cleaned[:3]):
         card["color"] = allowed_colors[i]
@@ -452,7 +754,7 @@ def normalize_learning_cards(cards):
     return cleaned[:3]
 
 
-def normalize_analysis_response(parsed):
+def normalize_analysis_response(parsed, image_hash):
     image_status = clean_text(parsed.get("imageStatus", "invalid")).lower()
 
     try:
@@ -463,37 +765,49 @@ def normalize_analysis_response(parsed):
     build_guess = safe_get_dict(parsed, "buildGuess")
     what_found = safe_get_dict(parsed, "whatWeFound")
 
+    noticed = ensure_list(
+        parsed.get("whatWeNoticed"),
+        [
+            "The build shows visible blocks arranged into a structure.",
+            "The child used block placement to create a shape or idea.",
+            "The structure has details that can be discussed with the child."
+        ],
+        limit=3
+    )
+
+    normalized_build_guess = {
+        "title": clean_text(
+            build_guess.get("title"),
+            "Open-ended Troy block build"
+        ),
+        "subtitle": clean_text(
+            build_guess.get("subtitle"),
+            "The child created a visible structure using blocks."
+        )
+    }
+
+    normalized_summary = clean_text(
+        what_found.get("summary"),
+        "The image shows a child-made block structure with visible block placement."
+    )
+
     result = {
         "status": "success",
         "imageStatus": "valid" if image_status == "valid" and confidence >= 65 else "invalid",
         "confidenceScore": confidence,
-        "buildGuess": {
-            "title": clean_text(
-                build_guess.get("title"),
-                "Open-ended Troy block build"
-            ),
-            "subtitle": clean_text(
-                build_guess.get("subtitle"),
-                "The child created a visible structure using blocks."
-            )
-        },
+        "buildGuess": normalized_build_guess,
         "whatWeFound": {
             "title": "What we found",
-            "summary": clean_text(
-                what_found.get("summary"),
-                "The image shows a child-made block structure with visible block placement."
-            )
+            "summary": normalized_summary
         },
-        "whatTheyLearned": normalize_learning_cards(parsed.get("whatTheyLearned")),
-        "whatWeNoticed": ensure_list(
-            parsed.get("whatWeNoticed"),
-            [
-                "The build shows visible blocks arranged into a structure.",
-                "The child used block placement to create a shape or idea.",
-                "The structure has details that can be discussed with the child."
-            ],
-            limit=3
+        "whatTheyLearned": normalize_learning_cards(
+            parsed.get("whatTheyLearned"),
+            normalized_build_guess,
+            normalized_summary,
+            noticed,
+            image_hash
         ),
+        "whatWeNoticed": noticed,
         "suggestionsForParent": ensure_list(
             parsed.get("suggestionsForParent"),
             [
@@ -529,13 +843,13 @@ def normalize_analysis_response(parsed):
 # Gemini analysis
 # =========================================================
 
-def analyze_with_gemini(pil_img, age):
+def analyze_with_gemini(pil_img, age, image_hash):
     model = build_gemini_model()
 
     if not model:
         raise RuntimeError("GEMINI_API_KEY not found")
 
-    prompt = build_troy_prompt(age)
+    prompt = build_troy_prompt(age, image_hash)
 
     response = model.generate_content([prompt, pil_img])
 
@@ -551,20 +865,20 @@ def analyze_with_gemini(pil_img, age):
 # Groq fallback analysis
 # =========================================================
 
-def analyze_with_groq(image_data_url, age):
+def analyze_with_groq(image_data_url, age, image_hash):
     client = build_groq_client()
 
     if not client:
         raise RuntimeError("GROQ_API_KEY not found")
 
-    prompt = build_troy_prompt(age)
+    prompt = build_troy_prompt(age, image_hash)
 
     completion = client.chat.completions.create(
         model=get_groq_vision_model(),
         messages=[
             {
                 "role": "system",
-                "content": "You are a careful visual analysis assistant. Return valid JSON only."
+                "content": "You are a careful, creative visual analysis assistant. Return valid JSON only."
             },
             {
                 "role": "user",
@@ -582,9 +896,9 @@ def analyze_with_groq(image_data_url, age):
                 ]
             }
         ],
-        temperature=0.65,
+        temperature=0.75,
         top_p=0.95,
-        max_completion_tokens=1300,
+        max_completion_tokens=1500,
         response_format={
             "type": "json_object"
         }
@@ -602,12 +916,13 @@ def analyze_with_groq(image_data_url, age):
 # Main fallback logic
 # =========================================================
 
-def analyze_image_with_fallback(pil_img, image_data_url, age):
+def analyze_image_with_fallback(pil_img, image_data_url, age, image_hash):
     errors = []
 
+    # Gemini first
     try:
-        parsed = analyze_with_gemini(pil_img, age)
-        result = normalize_analysis_response(parsed)
+        parsed = analyze_with_gemini(pil_img, age, image_hash)
+        result = normalize_analysis_response(parsed, image_hash)
         result["provider"] = "gemini"
         return result
 
@@ -616,9 +931,10 @@ def analyze_image_with_fallback(pil_img, image_data_url, age):
         print("Gemini failed:", error_text)
         errors.append(f"Gemini: {error_text}")
 
+    # Groq fallback
     try:
-        parsed = analyze_with_groq(image_data_url, age)
-        result = normalize_analysis_response(parsed)
+        parsed = analyze_with_groq(image_data_url, age, image_hash)
+        result = normalize_analysis_response(parsed, image_hash)
         result["provider"] = "groq"
         return result
 
@@ -697,7 +1013,7 @@ def analyze():
             analysis_cache.move_to_end(cache_key)
             return jsonify(cached), 200
 
-        result = analyze_image_with_fallback(pil_img, image_data_url, age)
+        result = analyze_image_with_fallback(pil_img, image_data_url, age, image_hash)
         result["cached"] = False
 
         if os.environ.get("SHOW_DEBUG", "false").lower() == "true":
@@ -705,13 +1021,14 @@ def analyze():
                 "filename": filename,
                 "image_hash": image_hash[:12],
                 "gemini_model": get_gemini_model(),
-                "groq_model": get_groq_vision_model()
+                "groq_model": get_groq_vision_model(),
+                "feedback_style": pick_feedback_style(image_hash)["name"]
             }
 
         save_cache(cache_key, result)
         sessions[result["session_id"]] = result
 
-        # Keep session memory small too
+        # Keep sessions small
         if len(sessions) > 50:
             oldest_key = next(iter(sessions))
             sessions.pop(oldest_key, None)
@@ -770,7 +1087,7 @@ Build summary:
 Parent question:
 {question}
 
-Answer in a short, warm, simple way.
+Answer in a short, warm, creative but realistic way.
 Use only the build details provided.
 Do not invent hidden abilities or unseen parts.
 Keep it to 3 to 5 short lines.
@@ -788,7 +1105,7 @@ Keep it to 3 to 5 short lines.
                     "content": prompt
                 }
             ],
-            temperature=0.45,
+            temperature=0.55,
             top_p=0.9,
             max_completion_tokens=300
         )
