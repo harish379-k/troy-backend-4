@@ -33,20 +33,14 @@ sessions = {}
 
 ALLOWED_EXTENSIONS = {"png", "jpg", "jpeg", "webp"}
 
-# Groq docs mention a 4MB limit for base64 encoded image requests.
-# Keep it slightly below 4MB for safety.
 MAX_BASE64_IMAGE_SIZE = 3_800_000
 
 
 # =========================================================
-# Groq helpers
+# Groq config
 # =========================================================
 
 def get_groq_api_key():
-    """
-    Use GROQ_API_KEY in Render environment variables.
-    Do not hardcode the API key in this file.
-    """
     return (
         os.environ.get("GROQ_API_KEY", "").strip()
         or os.environ.get("RENDER_GROQ_KEY", "").strip()
@@ -54,10 +48,6 @@ def get_groq_api_key():
 
 
 def get_vision_model_name():
-    """
-    Groq vision-capable model.
-    You can override this in Render using GROQ_VISION_MODEL.
-    """
     return os.environ.get(
         "GROQ_VISION_MODEL",
         "meta-llama/llama-4-scout-17b-16e-instruct"
@@ -65,10 +55,6 @@ def get_vision_model_name():
 
 
 def get_text_model_name():
-    """
-    Used for /ask route.
-    You can override this in Render using GROQ_TEXT_MODEL.
-    """
     return os.environ.get(
         "GROQ_TEXT_MODEL",
         "llama-3.3-70b-versatile"
@@ -90,7 +76,7 @@ print("Groq text model:", get_text_model_name())
 
 
 # =========================================================
-# General helpers
+# Basic helpers
 # =========================================================
 
 def allowed_file(filename):
@@ -132,65 +118,6 @@ def ensure_list(value, fallback=None, limit=3):
     return result[:limit]
 
 
-def ensure_learning_cards(cards, fallback_cards=None):
-    allowed_colors = ["cream", "green", "blue"]
-    cleaned_cards = []
-
-    if isinstance(cards, list):
-        for index, card in enumerate(cards):
-            if not isinstance(card, dict):
-                continue
-
-            title = clean_sentence(card.get("title"))
-            description = clean_sentence(card.get("description"))
-            color = clean_sentence(card.get("color", allowed_colors[index % 3])).lower()
-
-            if not title or not description:
-                continue
-
-            if color not in allowed_colors:
-                color = allowed_colors[index % 3]
-
-            cleaned_cards.append({
-                "title": title,
-                "description": description,
-                "color": color
-            })
-
-    if len(cleaned_cards) < 3 and fallback_cards:
-        for card in fallback_cards:
-            if len(cleaned_cards) >= 3:
-                break
-
-            if isinstance(card, dict):
-                cleaned_cards.append(card)
-
-    default_cards = [
-        {
-            "title": "Spatial Thinking",
-            "description": "The child practiced placing blocks in relation to each other.",
-            "color": "cream"
-        },
-        {
-            "title": "Balance and Stability",
-            "description": "The child explored how the structure stays standing.",
-            "color": "green"
-        },
-        {
-            "title": "Creative Planning",
-            "description": "The child turned an idea into a visible block structure.",
-            "color": "blue"
-        }
-    ]
-
-    for card in default_cards:
-        if len(cleaned_cards) >= 3:
-            break
-        cleaned_cards.append(card)
-
-    return cleaned_cards[:3]
-
-
 def extract_json_block(text):
     if not text:
         return ""
@@ -199,6 +126,7 @@ def extract_json_block(text):
 
     if text.startswith("```"):
         lines = text.splitlines()
+
         if len(lines) >= 3:
             text = "\n".join(lines[1:-1]).strip()
 
@@ -216,8 +144,13 @@ def parse_json_response(text):
     return json.loads(cleaned)
 
 
+# =========================================================
+# Error helpers
+# =========================================================
+
 def is_rate_limit_error(error_text):
     lower = error_text.lower()
+
     return (
         "429" in lower
         or "rate limit" in lower
@@ -228,6 +161,7 @@ def is_rate_limit_error(error_text):
 
 def is_invalid_key_error(error_text):
     lower = error_text.lower()
+
     return (
         "401" in lower
         or "403" in lower
@@ -239,6 +173,7 @@ def is_invalid_key_error(error_text):
 
 def is_image_too_large_error(error_text):
     lower = error_text.lower()
+
     return (
         "413" in lower
         or "payload too large" in lower
@@ -249,6 +184,7 @@ def is_image_too_large_error(error_text):
 
 def is_temporary_error(error_text):
     lower = error_text.lower()
+
     return (
         "503" in lower
         or "502" in lower
@@ -259,7 +195,7 @@ def is_temporary_error(error_text):
 
 
 # =========================================================
-# Image preparation for Groq vision
+# Image compression for Groq vision
 # =========================================================
 
 def encode_image_to_base64_jpeg(img, quality):
@@ -271,31 +207,20 @@ def encode_image_to_base64_jpeg(img, quality):
 
 
 def image_file_to_data_url(image_file):
-    """
-    Converts uploaded image into a compressed base64 data URL.
-
-    Groq vision accepts image_url input.
-    For local uploads, we pass the image as:
-    data:image/jpeg;base64,<base64>
-    """
     img = Image.open(image_file.stream)
     img = ImageOps.exif_transpose(img)
 
-    if img.mode not in ("RGB",):
+    if img.mode != "RGB":
         img = img.convert("RGB")
 
-    # First resize
     img.thumbnail((1400, 1400))
 
-    qualities = [85, 75, 65, 55, 45]
-
-    for quality in qualities:
+    for quality in [85, 75, 65, 55, 45]:
         encoded = encode_image_to_base64_jpeg(img, quality)
 
         if len(encoded.encode("utf-8")) <= MAX_BASE64_IMAGE_SIZE:
             return f"data:image/jpeg;base64,{encoded}"
 
-    # If still too large, resize more aggressively
     img.thumbnail((1000, 1000))
 
     for quality in [70, 60, 50, 40]:
@@ -308,106 +233,362 @@ def image_file_to_data_url(image_file):
 
 
 # =========================================================
-# Fallback response helpers
+# Guess repair + learning-card logic
 # =========================================================
 
-def fallback_cards_from_category(category):
-    category = clean_sentence(category).lower()
+def combined_evidence_text(visible_elements, extra_text=""):
+    items = visible_elements or []
+    return clean_sentence(" ".join(items) + " " + extra_text).lower()
 
-    if "bridge" in category:
-        return [
-            {
-                "title": "Support and Span",
-                "description": "The child explored how blocks can stretch across a gap.",
-                "color": "cream"
-            },
-            {
-                "title": "Balance",
-                "description": "The build uses side supports to keep the bridge steady.",
-                "color": "green"
-            },
-            {
-                "title": "Problem Solving",
-                "description": "The child tested how pieces connect to make a pathway.",
-                "color": "blue"
-            }
-        ]
 
-    if "tower" in category:
-        return [
-            {
-                "title": "Vertical Building",
-                "description": "The child practiced stacking blocks upward with control.",
-                "color": "cream"
-            },
-            {
-                "title": "Stability",
-                "description": "The child explored how taller structures need stronger support.",
-                "color": "green"
-            },
-            {
-                "title": "Patience",
-                "description": "Stacking pieces carefully helps develop focus and hand control.",
-                "color": "blue"
-            }
-        ]
+def derive_category_from_evidence(raw_category, visible_elements, extra_text=""):
+    category = clean_sentence(raw_category, "abstract").lower()
+    evidence = combined_evidence_text(visible_elements, extra_text)
 
-    if "animal" in category:
-        return [
-            {
-                "title": "Symbolic Thinking",
-                "description": "The child used simple blocks to represent a living thing.",
-                "color": "cream"
-            },
-            {
-                "title": "Body Parts",
-                "description": "The build shows early thinking about parts such as body, legs, head, or neck.",
-                "color": "green"
-            },
-            {
-                "title": "Imagination",
-                "description": "The child connected block shapes to a real-world idea.",
-                "color": "blue"
-            }
-        ]
+    tower_words = [
+        "tower", "stack", "stacked", "tall", "height", "vertical", "upward",
+        "on top", "above", "column"
+    ]
 
-    if "house" in category or "castle" in category or "building" in category:
-        return [
-            {
-                "title": "Structure Design",
-                "description": "The child created a build with organized parts like base, walls, or roof-like shapes.",
-                "color": "cream"
-            },
-            {
-                "title": "Shape Recognition",
-                "description": "The child used different block shapes to form a recognizable structure.",
-                "color": "green"
-            },
-            {
-                "title": "Planning",
-                "description": "The build shows an idea being arranged into visible parts.",
-                "color": "blue"
-            }
-        ]
+    bridge_words = [
+        "bridge", "span", "across", "gap", "horizontal beam", "horizontal piece",
+        "two supports", "support on both sides", "connects"
+    ]
 
-    return [
+    house_words = [
+        "house", "home", "roof", "triangle", "wall", "room", "door",
+        "window", "built space"
+    ]
+
+    vehicle_words = [
+        "vehicle", "car", "wheel", "wheels", "axle", "front", "back",
+        "body of a vehicle"
+    ]
+
+    animal_words = [
+        "animal", "head", "body", "leg", "legs", "neck", "tail", "face"
+    ]
+
+    road_words = [
+        "road", "path", "track", "route", "line", "trail"
+    ]
+
+    gate_words = [
+        "gate", "opening", "entrance", "doorway", "arch"
+    ]
+
+    castle_words = [
+        "castle", "fort", "wall", "turret"
+    ]
+
+    evidence_map = {
+        "tower": tower_words,
+        "bridge": bridge_words,
+        "house": house_words,
+        "vehicle": vehicle_words,
+        "animal": animal_words,
+        "road": road_words,
+        "gate": gate_words,
+        "castle": castle_words
+    }
+
+    # First: infer a category directly from visible evidence.
+    for possible_category, words in evidence_map.items():
+        if any(word in evidence for word in words):
+            return possible_category
+
+    # Second: keep the model category only if it is safe.
+    safe_categories = [
+        "tower", "bridge", "house", "vehicle", "animal",
+        "gate", "castle", "road", "abstract", "unclear", "unrelated"
+    ]
+
+    if category in safe_categories:
+        if category in ["tower", "bridge", "house", "vehicle", "animal", "road", "gate", "castle"]:
+            required_words = evidence_map.get(category, [])
+            has_support = any(word in evidence for word in required_words)
+
+            if not has_support:
+                return "abstract"
+
+        return category
+
+    return "abstract"
+
+
+def repair_weak_guess(build_category, title, subtitle, visible_elements, summary=""):
+    category = derive_category_from_evidence(
+        raw_category=build_category,
+        visible_elements=visible_elements,
+        extra_text=f"{title} {subtitle} {summary}"
+    )
+
+    safe_titles = {
+        "tower": "Tower-like block structure",
+        "bridge": "Bridge-like block structure",
+        "house": "House-like block structure",
+        "vehicle": "Vehicle-like block structure",
+        "animal": "Animal-like block structure",
+        "road": "Road or path-like block layout",
+        "gate": "Gate-like block structure",
+        "castle": "Castle-like block structure",
+        "abstract": "Abstract Troy block structure",
+        "unclear": "Unclear Troy block structure",
+        "unrelated": "Unclear image"
+    }
+
+    safe_subtitles = {
+        "tower": "The build appears to use height and stacking as the main idea.",
+        "bridge": "The build appears to use supports and a connecting section.",
+        "house": "The build appears to have parts that could represent a small built space.",
+        "vehicle": "The build could represent a vehicle if the child intended it that way.",
+        "animal": "The build could represent an animal if the child intended it that way.",
+        "road": "The build appears to arrange blocks like a path or route.",
+        "gate": "The build appears to include an opening or entrance-like shape.",
+        "castle": "The build appears to have castle-like parts such as height, walls, or sections.",
+        "abstract": "The child created an open-ended structure using block placement and shape.",
+        "unclear": "The build is visible, but the exact object is not clear from the image.",
+        "unrelated": "The image does not clearly show a Troy block build."
+    }
+
+    return {
+        "category": category,
+        "title": safe_titles.get(category, "Abstract Troy block structure"),
+        "subtitle": safe_subtitles.get(
+            category,
+            "The child created an open-ended structure using block placement and shape."
+        )
+    }
+
+
+def has_keyword(text, keywords):
+    text = text.lower()
+    return any(keyword in text for keyword in keywords)
+
+
+def visible_phrase(visible_elements):
+    if visible_elements:
+        return visible_elements[0]
+    return "the visible block arrangement"
+
+
+def build_learning_cards_from_evidence(category, visible_elements):
+    evidence = combined_evidence_text(visible_elements)
+    main_detail = visible_phrase(visible_elements)
+
+    cards = []
+
+    if has_keyword(evidence, ["stack", "stacked", "tall", "vertical", "height", "tower"]):
+        cards.append({
+            "title": "Stacking and Balance",
+            "description": f"The child practiced placing blocks carefully upward, especially around {main_detail}.",
+            "color": "cream"
+        })
+
+    if has_keyword(evidence, ["wide base", "base", "support", "steady", "stability"]):
+        cards.append({
+            "title": "Stability",
+            "description": "The child explored how a stronger base or support can help the build stay steady.",
+            "color": "green"
+        })
+
+    if has_keyword(evidence, ["bridge", "span", "gap", "across", "horizontal", "connects"]):
+        cards.append({
+            "title": "Support and Span",
+            "description": "The child explored how blocks can connect across a space or rest on supports.",
+            "color": "cream"
+        })
+
+    if has_keyword(evidence, ["repeat", "repeated", "same", "pattern", "symmetry", "symmetrical"]):
+        cards.append({
+            "title": "Pattern Recognition",
+            "description": "The child noticed how repeated blocks or similar placements can make the build more organized.",
+            "color": "green"
+        })
+
+    if has_keyword(evidence, ["triangle", "roof", "curve", "curved", "arch", "different shapes"]):
+        cards.append({
+            "title": "Shape Matching",
+            "description": "The child experimented with how different block shapes can fit into one structure.",
+            "color": "blue"
+        })
+
+    if has_keyword(evidence, ["small block", "many pieces", "careful", "loose", "placed"]):
+        cards.append({
+            "title": "Fine Motor Control",
+            "description": "Placing the pieces carefully helps the child practice hand control and focus.",
+            "color": "blue"
+        })
+
+    if category == "tower":
+        cards.append({
+            "title": "Height Awareness",
+            "description": "The child explored how a build changes when pieces are placed higher.",
+            "color": "cream"
+        })
+
+    if category == "bridge":
+        cards.append({
+            "title": "Cause and Effect",
+            "description": "The child can test what happens when a support is moved, added, or removed.",
+            "color": "blue"
+        })
+
+    if category == "house":
+        cards.append({
+            "title": "Structure Planning",
+            "description": "The child practiced arranging blocks into parts that feel like a built space.",
+            "color": "cream"
+        })
+
+    if category == "vehicle":
+        cards.append({
+            "title": "Part-to-Whole Thinking",
+            "description": "The child used smaller pieces to represent one larger idea, like a vehicle form.",
+            "color": "green"
+        })
+
+    if category == "animal":
+        cards.append({
+            "title": "Symbolic Thinking",
+            "description": "The child used simple block shapes to represent something from real life.",
+            "color": "cream"
+        })
+
+    if category in ["abstract", "unclear"]:
+        cards.append({
+            "title": "Spatial Thinking",
+            "description": f"The child practiced deciding where each block should go, especially around {main_detail}.",
+            "color": "cream"
+        })
+        cards.append({
+            "title": "Creative Expression",
+            "description": "The open-ended build allowed the child to turn an idea into a physical structure.",
+            "color": "green"
+        })
+
+    default_cards = [
         {
             "title": "Spatial Thinking",
-            "description": "The child practiced arranging pieces in space.",
+            "description": "The child practiced placing blocks in relation to each other.",
             "color": "cream"
         },
         {
             "title": "Balance and Stability",
-            "description": "The child explored how blocks can stay steady together.",
+            "description": "The child explored how blocks can stay steady when arranged carefully.",
             "color": "green"
         },
         {
-            "title": "Creative Expression",
-            "description": "The child used wooden pieces to express an idea through building.",
+            "title": "Creative Planning",
+            "description": "The child turned an idea into a visible block structure.",
             "color": "blue"
         }
     ]
 
+    cleaned = []
+    used_titles = set()
+    colors = ["cream", "green", "blue"]
+
+    for card in cards + default_cards:
+        title = clean_sentence(card.get("title"))
+        description = clean_sentence(card.get("description"))
+        color = clean_sentence(card.get("color", colors[len(cleaned) % 3])).lower()
+
+        if not title or not description:
+            continue
+
+        if title.lower() in used_titles:
+            continue
+
+        if color not in colors:
+            color = colors[len(cleaned) % 3]
+
+        cleaned.append({
+            "title": title,
+            "description": description,
+            "color": color
+        })
+        used_titles.add(title.lower())
+
+        if len(cleaned) == 3:
+            break
+
+    for index, card in enumerate(cleaned):
+        card["color"] = colors[index]
+
+    return cleaned[:3]
+
+
+def is_generic_learning_card(card):
+    title = clean_sentence(card.get("title")).lower()
+    description = clean_sentence(card.get("description")).lower()
+
+    generic_titles = [
+        "creativity",
+        "problem solving",
+        "engineering",
+        "stem learning",
+        "motor skills",
+        "imagination"
+    ]
+
+    if title in generic_titles:
+        return True
+
+    too_generic_phrases = [
+        "learned creativity",
+        "used imagination",
+        "developed problem solving",
+        "improved engineering skills",
+        "built something creative"
+    ]
+
+    return any(phrase in description for phrase in too_generic_phrases)
+
+
+def choose_learning_cards(ai_cards, category, visible_elements):
+    backend_cards = build_learning_cards_from_evidence(category, visible_elements)
+
+    if not isinstance(ai_cards, list) or len(ai_cards) < 3:
+        return backend_cards
+
+    cleaned = []
+    allowed_colors = ["cream", "green", "blue"]
+
+    for index, card in enumerate(ai_cards):
+        if not isinstance(card, dict):
+            continue
+
+        title = clean_sentence(card.get("title"))
+        description = clean_sentence(card.get("description"))
+        color = clean_sentence(card.get("color", allowed_colors[index % 3])).lower()
+
+        if not title or not description:
+            continue
+
+        if color not in allowed_colors:
+            color = allowed_colors[index % 3]
+
+        temp_card = {
+            "title": title,
+            "description": description,
+            "color": color
+        }
+
+        if is_generic_learning_card(temp_card):
+            return backend_cards
+
+        cleaned.append(temp_card)
+
+    if len(cleaned) < 3:
+        return backend_cards
+
+    return cleaned[:3]
+
+
+# =========================================================
+# Invalid response
+# =========================================================
 
 def build_invalid_photo_response(reason, noticed=None, suggestions=None, ideas=None):
     session_id = str(uuid.uuid4())
@@ -454,49 +635,88 @@ def build_invalid_photo_response(reason, noticed=None, suggestions=None, ideas=N
 
 
 # =========================================================
-# Groq vision prompt
+# Groq prompt
 # =========================================================
 
 def build_troy_analysis_prompt(age):
     return f"""
 You are Troy AI Analyzer for Troy World.
 
-Your job:
-Analyze a child's physical Troy-block build from one uploaded photo.
+Your task:
+Analyze one uploaded photo of a child's Troy wooden-block build.
 
 Child age:
 {age if age else "unknown"}
 
 TROY BLOCK CONTEXT:
-- Troy builds are made from light/natural wooden blocks.
-- Common Troy pieces may include cubes, rectangular blocks, long beams, planks, pillars, triangular roof-like pieces, curved/arch pieces, and small connector-like wooden pieces.
-- Children may build animals, towers, bridges, houses, gates, castles, roads, vehicles, abstract structures, or pretend scenes.
+- Troy builds are made using wooden blocks.
+- Pieces may include cubes, cuboids, long beams, planks, pillars, triangular roof pieces, curved/arch pieces, and connector-like wooden pieces.
+- Children may build towers, bridges, houses, animals, vehicles, gates, castles, roads, pretend scenes, or abstract structures.
 
-VERY IMPORTANT ACCURACY RULES:
-1. Do not give generic feedback.
-2. Every sentence must be based on visible evidence in the image.
-3. Mention concrete visual details such as:
-   - tall stack
-   - wide base
-   - bridge span
-   - roof or triangle piece
-   - repeated blocks
-   - symmetry
-   - gaps
-   - curved pieces
-   - loose pieces
-   - horizontal/vertical arrangement
-4. If you are not sure what the build is, call it an abstract structure instead of inventing a wrong object.
-5. Reject selfies, people-only photos, screenshots, drawings, real buildings, random objects, or images without visible Troy-style wooden blocks.
-6. Reject blurry, dark, cropped, or far-away photos where the structure cannot be understood.
-7. Keep the tone warm, simple, and parent-friendly.
-8. Do not mention hidden learning claims that cannot be inferred from the build.
-9. Return valid JSON only. No markdown. No extra text.
+MOST IMPORTANT RULE:
+Do not guess the child's intention randomly.
+Only identify the build as a specific object if the visible structure strongly supports it.
+
+GUESSING RULES:
+- If it has stacked vertical pieces and height: call it a tower-like structure.
+- If it has two supports with a horizontal piece across: call it a bridge-like structure.
+- If it has walls, roof/triangle pieces, or room-like layout: call it a house-like structure.
+- If it has wheels, axle-like parts, or clear vehicle shape: call it a vehicle-like structure.
+- If it has body + legs/head/neck shape: call it an animal-like structure.
+- If it has an entrance/opening/arch: call it a gate-like structure.
+- If it is not clear, call it an abstract block structure.
+- Never confidently say car, dog, castle, or house unless there is strong visible evidence.
+- Use cautious language like "looks like", "seems like", or "could be" when uncertain.
+
+VISIBLE EVIDENCE RULES:
+Every sentence must be based on visible details in the image.
+Mention actual visible details such as:
+- tall stack
+- wide base
+- repeated blocks
+- horizontal beam
+- vertical supports
+- triangle/roof piece
+- curved piece
+- symmetry
+- gaps
+- loose blocks
+- connected sections
+
+INVALID IMAGE RULES:
+Mark imageStatus as "invalid" if:
+- no Troy-style wooden blocks are visible
+- image is mostly a person/selfie
+- image is a screenshot/drawing
+- image shows real buildings, furniture, toys, or random objects instead of Troy blocks
+- image is too blurry/dark/cropped/far away to understand the build
+
+WHAT THEY LEARNED RULES:
+Each learning card must connect to something visible in the build.
+Do not write generic learning cards.
+
+Good learning card examples:
+- If blocks are stacked: "Stacking and Balance"
+- If there is a wide base: "Stability"
+- If repeated blocks are used: "Pattern Recognition"
+- If there are gaps/bridges: "Support and Span"
+- If different shapes are combined: "Shape Matching"
+- If the build is pretend/abstract: "Imagination and Storytelling"
+- If the child used many pieces carefully: "Fine Motor Control"
+
+Bad learning cards:
+- "Creativity" alone is too generic.
+- "Engineering skills" is too advanced.
+- "Problem solving" without visible explanation is too generic.
 
 CONFIDENCE RULE:
-- imageStatus must be "valid" only when visible Troy-style wooden blocks occupy a meaningful part of the image and the structure can be described.
-- confidenceScore must be from 0 to 100.
+- confidenceScore must be 0 to 100.
+- imageStatus must be "valid" only if visible wooden Troy-style blocks are clearly present.
 - If confidenceScore is below 65, imageStatus must be "invalid".
+
+Return valid JSON only.
+No markdown.
+No extra text.
 
 Return exactly this JSON shape:
 
@@ -505,37 +725,37 @@ Return exactly this JSON shape:
   "imageStatus": "valid or invalid",
   "confidenceScore": 0,
   "analysisDetails": {{
-    "buildCategory": "animal / tower / bridge / house / gate / castle / road / vehicle / abstract / unclear / unrelated",
+    "buildCategory": "tower / bridge / house / vehicle / animal / gate / castle / road / abstract / unclear / unrelated",
     "visibleElements": [
       "specific visible detail 1",
       "specific visible detail 2",
       "specific visible detail 3"
     ],
     "blockCountEstimate": "rough estimate like 5-8, 10-15, 20+ or unclear",
-    "whyThisGuess": "one short sentence explaining the guess using visible details"
+    "whyThisGuess": "explain the guess using only visible details"
   }},
   "buildGuess": {{
-    "title": "specific guessed build name",
-    "subtitle": "one short sentence describing what the child likely built"
+    "title": "safe build interpretation",
+    "subtitle": "one short sentence explaining what it looks like"
   }},
   "whatWeFound": {{
     "title": "What we found",
-    "summary": "2 short sentences that mention the actual visible structure and parts"
+    "summary": "2 short sentences describing the actual visible structure"
   }},
   "whatTheyLearned": [
     {{
-      "title": "specific skill name",
-      "description": "specific explanation connected to this exact build",
+      "title": "specific learning skill",
+      "description": "specific explanation connected to visible details in this build",
       "color": "cream"
     }},
     {{
-      "title": "specific skill name",
-      "description": "specific explanation connected to this exact build",
+      "title": "specific learning skill",
+      "description": "specific explanation connected to visible details in this build",
       "color": "green"
     }},
     {{
-      "title": "specific skill name",
-      "description": "specific explanation connected to this exact build",
+      "title": "specific learning skill",
+      "description": "specific explanation connected to visible details in this build",
       "color": "blue"
     }}
   ],
@@ -561,9 +781,12 @@ For invalid images:
 - Set imageStatus to "invalid".
 - Set confidenceScore below 65.
 - Set whatTheyLearned to an empty list.
-- Explain whether the image is unclear, unrelated, or not a Troy block build.
 """
 
+
+# =========================================================
+# Groq calls
+# =========================================================
 
 def call_groq_vision(client, image_data_url, age):
     prompt = build_troy_analysis_prompt(age)
@@ -573,7 +796,7 @@ def call_groq_vision(client, image_data_url, age):
         messages=[
             {
                 "role": "system",
-                "content": "You are a careful image analysis assistant. Always return valid JSON only."
+                "content": "You are a careful visual analysis assistant. Return valid JSON only."
             },
             {
                 "role": "user",
@@ -591,8 +814,8 @@ def call_groq_vision(client, image_data_url, age):
                 ]
             }
         ],
-        temperature=0.45,
-        top_p=0.9,
+        temperature=0.25,
+        top_p=0.85,
         max_completion_tokens=1400,
         response_format={
             "type": "json_object"
@@ -693,7 +916,17 @@ def analyze():
         if not isinstance(analysis_details, dict):
             analysis_details = {}
 
-        build_category = clean_sentence(
+        raw_build_guess = parsed.get("buildGuess")
+
+        if not isinstance(raw_build_guess, dict):
+            raw_build_guess = {}
+
+        what_found = parsed.get("whatWeFound")
+
+        if not isinstance(what_found, dict):
+            what_found = {}
+
+        raw_build_category = clean_sentence(
             analysis_details.get("buildCategory"),
             "abstract"
         )
@@ -704,10 +937,22 @@ def analyze():
             limit=3
         )
 
+        raw_title = clean_sentence(raw_build_guess.get("title"))
+        raw_subtitle = clean_sentence(raw_build_guess.get("subtitle"))
+        raw_summary = clean_sentence(what_found.get("summary"))
+
+        safe_guess = repair_weak_guess(
+            build_category=raw_build_category,
+            title=raw_title,
+            subtitle=raw_subtitle,
+            visible_elements=visible_elements,
+            summary=raw_summary
+        )
+
+        final_category = safe_guess["category"]
+
         if image_status == "valid" and confidence_score >= 65:
             session_id = str(uuid.uuid4())
-
-            fallback_cards = fallback_cards_from_category(build_category)
 
             noticed_fallback = visible_elements or [
                 "The photo shows visible Troy-style wooden blocks arranged into a structure.",
@@ -715,12 +960,20 @@ def analyze():
                 "The child appears to be exploring shape, balance, and arrangement."
             ]
 
+            if raw_summary:
+                final_summary = raw_summary
+            else:
+                final_summary = (
+                    f"This looks like a {final_category}-style Troy block build. "
+                    "The visible blocks show arrangement, balance, and shape exploration."
+                )
+
             result = {
                 "status": "success",
                 "imageStatus": "valid",
                 "confidenceScore": confidence_score,
                 "analysisDetails": {
-                    "buildCategory": build_category,
+                    "buildCategory": final_category,
                     "visibleElements": visible_elements,
                     "blockCountEstimate": clean_sentence(
                         analysis_details.get("blockCountEstimate"),
@@ -728,35 +981,21 @@ def analyze():
                     ),
                     "whyThisGuess": clean_sentence(
                         analysis_details.get("whyThisGuess"),
-                        "The guess is based on the visible block arrangement."
+                        safe_guess["subtitle"]
                     )
                 },
                 "buildGuess": {
-                    "title": clean_sentence(
-                        parsed.get("buildGuess", {}).get("title")
-                        if isinstance(parsed.get("buildGuess"), dict)
-                        else "",
-                        "Troy block structure"
-                    ),
-                    "subtitle": clean_sentence(
-                        parsed.get("buildGuess", {}).get("subtitle")
-                        if isinstance(parsed.get("buildGuess"), dict)
-                        else "",
-                        "The child created a visible structure using Troy blocks."
-                    )
+                    "title": safe_guess["title"],
+                    "subtitle": safe_guess["subtitle"]
                 },
                 "whatWeFound": {
                     "title": "What we found",
-                    "summary": clean_sentence(
-                        parsed.get("whatWeFound", {}).get("summary")
-                        if isinstance(parsed.get("whatWeFound"), dict)
-                        else "",
-                        "This image shows a Troy block structure with visible wooden pieces."
-                    )
+                    "summary": final_summary
                 },
-                "whatTheyLearned": ensure_learning_cards(
+                "whatTheyLearned": choose_learning_cards(
                     parsed.get("whatTheyLearned"),
-                    fallback_cards=fallback_cards
+                    category=final_category,
+                    visible_elements=visible_elements
                 ),
                 "whatWeNoticed": ensure_list(
                     parsed.get("whatWeNoticed"),
@@ -781,24 +1020,23 @@ def analyze():
                     ],
                     limit=3
                 ),
-                "session_id": session_id,
-                "debug": {
-                    "filename": original_filename,
-                    "model": get_vision_model_name()
-                } if os.environ.get("SHOW_DEBUG", "false").lower() == "true" else None
+                "session_id": session_id
             }
 
-            if result["debug"] is None:
-                result.pop("debug", None)
+            if os.environ.get("SHOW_DEBUG", "false").lower() == "true":
+                result["debug"] = {
+                    "filename": original_filename,
+                    "model": get_vision_model_name(),
+                    "rawCategory": raw_build_category,
+                    "safeCategory": final_category
+                }
 
             sessions[session_id] = result
 
             return jsonify(result), 200
 
         invalid_reason = clean_sentence(
-            parsed.get("whatWeFound", {}).get("summary")
-            if isinstance(parsed.get("whatWeFound"), dict)
-            else "",
+            raw_summary,
             "We couldn’t clearly analyze this image as a Troy block build."
         )
 
@@ -835,7 +1073,7 @@ def analyze():
 
         result["confidenceScore"] = confidence_score
         result["analysisDetails"] = {
-            "buildCategory": build_category or "unclear",
+            "buildCategory": final_category or "unclear",
             "visibleElements": visible_elements,
             "blockCountEstimate": clean_sentence(
                 analysis_details.get("blockCountEstimate"),
@@ -847,17 +1085,10 @@ def analyze():
             )
         }
 
-        if isinstance(parsed.get("buildGuess"), dict):
-            result["buildGuess"] = {
-                "title": clean_sentence(
-                    parsed.get("buildGuess", {}).get("title"),
-                    "We couldn’t clearly analyze this image"
-                ),
-                "subtitle": clean_sentence(
-                    parsed.get("buildGuess", {}).get("subtitle"),
-                    invalid_reason
-                )
-            }
+        result["buildGuess"] = {
+            "title": "We couldn’t clearly analyze this image",
+            "subtitle": invalid_reason
+        }
 
         result["whatWeFound"] = {
             "title": "What we found",
@@ -941,7 +1172,7 @@ Keep it to 3 to 5 short lines.
                     "content": prompt
                 }
             ],
-            temperature=0.4,
+            temperature=0.35,
             top_p=0.9,
             max_completion_tokens=350
         )
