@@ -28,7 +28,7 @@ load_dotenv(BASE_DIR / ".env")
 
 app = Flask(__name__)
 
-# Prevent huge images from killing Render memory
+# Prevent huge uploads from killing Render memory
 app.config["MAX_CONTENT_LENGTH"] = 4 * 1024 * 1024  # 4 MB
 
 CORS_ORIGINS = os.environ.get("CORS_ORIGINS", "*")
@@ -36,10 +36,11 @@ CORS(app, origins=CORS_ORIGINS.split(","))
 
 ALLOWED_EXTENSIONS = {"png", "jpg", "jpeg", "webp"}
 
-# Keep low for Render free tier
+# Render-safe image size
 MAX_BASE64_IMAGE_SIZE = 1_800_000
 Image.MAX_IMAGE_PIXELS = 15_000_000
 
+# Limited in-memory cache
 analysis_cache = OrderedDict()
 MAX_CACHE_ITEMS = 30
 
@@ -87,7 +88,7 @@ def build_gemini_model():
     return genai.GenerativeModel(
         get_gemini_model(),
         generation_config={
-            "temperature": 0.75,
+            "temperature": 0.78,
             "top_p": 0.95,
             "max_output_tokens": 1500
         }
@@ -243,8 +244,8 @@ def prepare_image_for_models(image_file):
     """
     Returns:
     1. PIL image for Gemini
-    2. Base64 image data URL for Groq
-    3. SHA hash for cache and feedback variation
+    2. base64 data URL for Groq
+    3. image hash for caching and feedback variation
     """
 
     img = Image.open(image_file.stream)
@@ -253,7 +254,6 @@ def prepare_image_for_models(image_file):
     if img.mode != "RGB":
         img = img.convert("RGB")
 
-    # Memory-safe resize
     img.thumbnail((900, 900))
 
     for quality in [80, 70, 60, 50, 40]:
@@ -269,7 +269,6 @@ def prepare_image_for_models(image_file):
 
             return pil_img, data_url, image_hash
 
-    # More aggressive fallback
     img.thumbnail((700, 700))
 
     for quality in [60, 50, 40, 35]:
@@ -291,44 +290,38 @@ def prepare_image_for_models(image_file):
 
 
 # =========================================================
-# Creativity variation helpers
+# Creative variation helpers
 # =========================================================
 
 def pick_feedback_style(image_hash):
-    """
-    Picks a consistent creative feedback angle for each image.
-    Same image = same style because cache/feedback should stay stable.
-    Different image = likely different analysis style.
-    """
-
     styles = [
         {
             "name": "story-builder",
-            "instruction": "Focus on what story or pretend-play world this build could become."
+            "instruction": "Focus on the pretend-play story this build could become."
         },
         {
             "name": "designer",
-            "instruction": "Focus on the child's design choices, shape choices, and arrangement."
+            "instruction": "Focus on shape choices, arrangement, and design decisions."
         },
         {
-            "name": "builder-engineer",
-            "instruction": "Focus on balance, support, structure, levels, and how parts hold together."
+            "name": "builder",
+            "instruction": "Focus on supports, balance, levels, and how parts hold together."
         },
         {
             "name": "inventor",
-            "instruction": "Focus on unusual combinations, hybrid ideas, and creative object guessing."
+            "instruction": "Focus on unusual combinations, hybrid ideas, and creative guessing."
         },
         {
             "name": "architect",
-            "instruction": "Focus on spaces, floors, openings, rooms, height, and layout."
+            "instruction": "Focus on rooms, floors, openings, height, layout, and spaces."
         },
         {
             "name": "movement-maker",
-            "instruction": "Focus on whether the build suggests motion, wheels, paths, vehicles, or travel."
+            "instruction": "Focus on motion, wheels, paths, travel, vehicles, or moving ideas."
         },
         {
             "name": "pattern-finder",
-            "instruction": "Focus on repeated blocks, symmetry, spacing, rhythm, and visual patterns."
+            "instruction": "Focus on repeated blocks, matching, spacing, and visual patterns."
         }
     ]
 
@@ -337,21 +330,16 @@ def pick_feedback_style(image_hash):
 
 
 def build_unique_hint(image_hash):
-    """
-    Adds a small non-secret variation token so the model avoids repeating
-    the exact same wording for every upload.
-    """
-
-    openings = [
+    hints = [
         "Use fresh wording for this image.",
-        "Avoid repeating common phrases from previous analyses.",
-        "Make this feedback feel specific to this exact build.",
-        "Describe this as if seeing the child's build for the first time.",
-        "Let the visible shapes guide the guess."
+        "Do not repeat generic feedback titles.",
+        "Make the learning cards specific to this exact build.",
+        "Let visible parts guide the learning feedback.",
+        "Avoid basic titles like Creativity, Problem-Solving, or Spatial Awareness."
     ]
 
     seed_number = int(image_hash[8:16], 16)
-    return openings[seed_number % len(openings)]
+    return hints[seed_number % len(hints)]
 
 
 # =========================================================
@@ -393,32 +381,58 @@ Important rules:
   It may be a multi-level building, layered structure, raised house, platform scene,
   parking-garage-like build, lookout station, or pretend-play setup.
 - If the child combines multiple ideas, mention the combination.
-  Example: "It looks like a little moving home because it has a base that feels vehicle-like and a top section that feels like a room."
 - Base every sentence only on visible details.
 - Mention visible parts such as base, floors, levels, gaps, supports,
   repeated blocks, stacked sections, roof-like pieces, wheel-like parts,
   curved pieces, openings, paths, bridges, rooms, platforms, loose blocks,
   or upper/lower sections if visible.
 - If the image is not a Troy/block build, mark it invalid.
-- If you are unsure, use cautious phrases like "looks like", "could be", or "seems to".
+- If unsure, use cautious phrases like "looks like", "could be", or "seems to".
 - Keep the tone simple, warm, parent-friendly, and encouraging.
 - Do not overclaim.
-- Avoid generic repeated phrases like:
-  "The child practiced creativity",
-  "The child learned problem solving",
-  "The child used imagination",
-  unless you connect them to a visible detail.
-- Each learning card must mention something specific from the build.
-- Make every title and description feel unique to this photo.
 - Return JSON only.
 
-Creativity level:
-Be more creative in the guess, but stay grounded in visible evidence.
-A good guess can be playful, such as:
-"mini treehouse platform", "moving house", "block spaceship base",
-"tiny garage", "bridge-home", "castle entrance", "layered lookout tower",
-"animal-like machine", or "pretend city corner",
-but only if the visible image supports it.
+BANNED LEARNING CARD TITLES:
+Do not use these titles:
+- Creativity
+- Problem-Solving
+- Problem Solving
+- Spatial Awareness
+- Spatial Thinking
+- Imagination
+- Motor Skills
+- Fine Motor Skills
+- Engineering
+- STEM Learning
+- Critical Thinking
+
+Instead, use specific learning card titles based on the visible build, such as:
+- Layer Planning
+- Upper-Level Building
+- Bridge Support
+- Moving Base Idea
+- Tiny Home Story
+- Roof Shape Experiment
+- Open-Space Design
+- Block Pattern Play
+- Creature-Making
+- Careful Stacking
+- Shape Combining
+- Idea Mixing
+- Build-and-Tell Practice
+- Small-World Making
+- Support Below, Space Above
+- Vehicle Shape Thinking
+- Room-Making
+- Entrance Building
+- Testing What Holds
+- Above-Below Thinking
+
+Each learning card must:
+- be specific to this exact build
+- mention a visible detail from the image
+- avoid generic praise
+- sound different from the other two cards
 
 Return this exact JSON shape:
 
@@ -436,17 +450,17 @@ Return this exact JSON shape:
   }},
   "whatTheyLearned": [
     {{
-      "title": "specific learning skill",
+      "title": "specific learning skill title, not generic",
       "description": "specific explanation connected to visible details in this build",
       "color": "cream"
     }},
     {{
-      "title": "specific learning skill",
+      "title": "specific learning skill title, not generic",
       "description": "specific explanation connected to visible details in this build",
       "color": "green"
     }},
     {{
-      "title": "specific learning skill",
+      "title": "specific learning skill title, not generic",
       "description": "specific explanation connected to visible details in this build",
       "color": "blue"
     }}
@@ -476,7 +490,7 @@ Rules for invalid image:
 
 
 # =========================================================
-# Better fallback feedback
+# Specific feedback fallback logic
 # =========================================================
 
 def contains_any(text, words):
@@ -494,154 +508,225 @@ def build_context_text(build_guess, summary, noticed):
 
 
 def creative_fallback_cards(build_guess, summary, noticed, image_hash):
-    """
-    Used only when AI gives weak/missing learning cards.
-    These cards are generated from the actual guess + observations,
-    so they are less repetitive than fixed generic cards.
-    """
-
     context = build_context_text(build_guess, summary, noticed)
     main_detail = noticed[0] if noticed else "the visible block arrangement"
 
     card_pool = []
 
-    if contains_any(context, ["level", "floor", "platform", "layer", "upper", "lower"]):
+    # Multi-level / floor / layered builds
+    if contains_any(context, ["level", "floor", "platform", "layer", "upper", "lower", "multi-level"]):
         card_pool.extend([
             {
-                "title": "Layered Building",
-                "description": f"The child explored how one part can sit above another, especially around {main_detail}.",
+                "title": "Upper-Level Building",
+                "description": f"The child explored how one section can sit above another, especially around {main_detail}.",
                 "color": "cream"
             },
             {
-                "title": "Vertical Planning",
-                "description": "The build shows early thinking about how lower sections can support upper sections.",
+                "title": "Layer Planning",
+                "description": "The child practiced making a build with lower and upper parts instead of one simple stack.",
                 "color": "green"
-            }
-        ])
-
-    if contains_any(context, ["wheel", "vehicle", "moving", "car", "base", "travel"]):
-        card_pool.extend([
-            {
-                "title": "Movement Thinking",
-                "description": "The child connected the block shape to the idea of something that could move or travel.",
-                "color": "cream"
             },
             {
-                "title": "Part-to-Whole Design",
-                "description": "The child explored how a base and top section can work together as one bigger idea.",
-                "color": "green"
-            }
-        ])
-
-    if contains_any(context, ["house", "room", "roof", "home", "door", "window"]):
-        card_pool.extend([
-            {
-                "title": "Space Making",
-                "description": "The child used blocks to suggest a small space, room, or home-like area.",
-                "color": "cream"
-            },
-            {
-                "title": "Pretend-Play Planning",
-                "description": "The build can become part of a story about who lives there or what happens inside.",
+                "title": "Support Below, Space Above",
+                "description": "The build encourages the child to think about how bottom blocks can hold up higher sections.",
                 "color": "blue"
             }
         ])
 
-    if contains_any(context, ["bridge", "gap", "span", "across", "support"]):
+    # Vehicle / moving base builds
+    if contains_any(context, ["wheel", "vehicle", "moving", "car", "base", "travel", "rolling"]):
         card_pool.extend([
             {
-                "title": "Support and Span",
-                "description": "The child explored how blocks can reach across a space or rest on supports.",
+                "title": "Moving Base Idea",
+                "description": "The child connected the bottom part of the build with the idea of movement or travel.",
                 "color": "cream"
             },
             {
-                "title": "Testing Stability",
-                "description": "The build invites the child to test which parts stay steady and which parts need support.",
+                "title": "Vehicle Shape Thinking",
+                "description": "The child explored how a block base can become something that looks ready to move.",
                 "color": "green"
+            },
+            {
+                "title": "Parts Working Together",
+                "description": "The child practiced combining a base and upper section into one complete build idea.",
+                "color": "blue"
             }
         ])
 
-    if contains_any(context, ["curve", "arch", "opening", "gate", "entrance", "tunnel"]):
+    # House / room / roof builds
+    if contains_any(context, ["house", "home", "room", "roof", "door", "window", "shelter"]):
+        card_pool.extend([
+            {
+                "title": "Tiny Home Story",
+                "description": "The child used blocks to suggest a small home-like space that can become part of a story.",
+                "color": "cream"
+            },
+            {
+                "title": "Roof Shape Experiment",
+                "description": "The child explored how top pieces can make a build feel like a room, roof, or shelter.",
+                "color": "green"
+            },
+            {
+                "title": "Room-Making",
+                "description": "The build helps the child think about inside and outside spaces using simple blocks.",
+                "color": "blue"
+            }
+        ])
+
+    # Bridge / gap / support builds
+    if contains_any(context, ["bridge", "gap", "span", "across", "support", "beam"]):
+        card_pool.extend([
+            {
+                "title": "Bridge Support",
+                "description": "The child explored how blocks can stretch across a gap while still needing support.",
+                "color": "cream"
+            },
+            {
+                "title": "Across-and-Over Thinking",
+                "description": "The build helps the child notice how one part can connect two separate sides.",
+                "color": "green"
+            },
+            {
+                "title": "Testing What Holds",
+                "description": "The child can learn which blocks keep the bridge-like part steady and which parts wobble.",
+                "color": "blue"
+            }
+        ])
+
+    # Gate / arch / tunnel builds
+    if contains_any(context, ["gate", "arch", "opening", "entrance", "tunnel", "curve"]):
         card_pool.extend([
             {
                 "title": "Open-Space Design",
-                "description": "The child explored how blocks can create an opening, entrance, or pass-through space.",
+                "description": "The child explored how blocks can make an entrance, tunnel, or pass-through space.",
                 "color": "cream"
             },
             {
-                "title": "Shape Experimenting",
-                "description": "The build shows curiosity about how different shapes can create a new form.",
+                "title": "Entrance Building",
+                "description": "The build invites the child to think about where something could go in or come out.",
                 "color": "green"
-            }
-        ])
-
-    if contains_any(context, ["repeat", "same", "pattern", "symmetry", "line"]):
-        card_pool.extend([
-            {
-                "title": "Pattern Spotting",
-                "description": "The child used repeated placement to make the build feel more organized.",
-                "color": "cream"
             },
             {
-                "title": "Visual Rhythm",
-                "description": "The repeated block choices help the child notice spacing and arrangement.",
-                "color": "green"
-            }
-        ])
-
-    if contains_any(context, ["animal", "creature", "head", "legs", "tail", "body"]):
-        card_pool.extend([
-            {
-                "title": "Symbolic Thinking",
-                "description": "The child used simple block shapes to suggest a living thing or creature.",
-                "color": "cream"
-            },
-            {
-                "title": "Story Imagination",
-                "description": "The animal-like form can become a character in the child's pretend play.",
+                "title": "Curve and Shape Play",
+                "description": "The child experimented with how curved or open shapes can change the build’s meaning.",
                 "color": "blue"
             }
         ])
 
-    if contains_any(context, ["tower", "stack", "tall", "height", "vertical"]):
+    # Pattern / repeated blocks
+    if contains_any(context, ["repeat", "repeated", "same", "pattern", "symmetry", "line", "row"]):
         card_pool.extend([
             {
-                "title": "Height Control",
-                "description": "The child explored how the build changes when pieces are placed higher.",
+                "title": "Block Pattern Play",
+                "description": "The child used repeated placement to make parts of the build feel organized.",
                 "color": "cream"
             },
             {
-                "title": "Careful Stacking",
-                "description": "Placing blocks upward helps the child practice patience and hand control.",
+                "title": "Matching and Repeating",
+                "description": "The child practiced noticing which blocks look similar and how they can be placed together.",
                 "color": "green"
+            },
+            {
+                "title": "Visual Order",
+                "description": "The repeated blocks help the child explore spacing, direction, and arrangement.",
+                "color": "blue"
             }
         ])
 
-    # Always add some creative non-generic choices
+    # Animal / creature builds
+    if contains_any(context, ["animal", "creature", "head", "legs", "tail", "body", "neck"]):
+        card_pool.extend([
+            {
+                "title": "Creature-Making",
+                "description": "The child used simple block parts to suggest a body, head, legs, or creature-like shape.",
+                "color": "cream"
+            },
+            {
+                "title": "Character Building",
+                "description": "The animal-like shape can become a pretend character in the child’s play story.",
+                "color": "green"
+            },
+            {
+                "title": "Body-Part Thinking",
+                "description": "The child explored how separate blocks can stand for different parts of one living thing.",
+                "color": "blue"
+            }
+        ])
+
+    # Tall / stacking builds
+    if contains_any(context, ["tower", "stack", "tall", "height", "vertical"]):
+        card_pool.extend([
+            {
+                "title": "Careful Stacking",
+                "description": f"The child practiced placing pieces upward while keeping the structure steady near {main_detail}.",
+                "color": "cream"
+            },
+            {
+                "title": "Height Control",
+                "description": "The child explored how a build changes when blocks are placed higher and higher.",
+                "color": "green"
+            },
+            {
+                "title": "Steady Hands",
+                "description": "The child practiced careful hand movement while adding blocks without knocking the build down.",
+                "color": "blue"
+            }
+        ])
+
+    # Hybrid / pretend builds
+    if contains_any(context, ["hybrid", "combines", "combination", "moving house", "house-on-wheels", "machine", "pretend", "scene"]):
+        card_pool.extend([
+            {
+                "title": "Idea Mixing",
+                "description": "The child combined more than one idea into a single build instead of making only one simple object.",
+                "color": "cream"
+            },
+            {
+                "title": "Pretend-World Design",
+                "description": "The build can become a small story world where different parts have different jobs.",
+                "color": "green"
+            },
+            {
+                "title": "Inventor Thinking",
+                "description": "The child experimented with making something unusual by joining different block ideas together.",
+                "color": "blue"
+            }
+        ])
+
+    # Always available non-generic cards
     card_pool.extend([
         {
-            "title": "Idea Combining",
-            "description": f"The child connected visible parts like {main_detail} into one larger build idea.",
+            "title": "Block Decision-Making",
+            "description": f"The child made choices about where to place pieces, especially around {main_detail}.",
             "color": "cream"
         },
         {
-            "title": "Design Choices",
-            "description": "The child made choices about where blocks should go, what should be higher, and what should connect.",
+            "title": "Shape Combining",
+            "description": "The child explored how different block shapes can come together to create one bigger idea.",
             "color": "green"
         },
         {
-            "title": "Story Building",
-            "description": "The structure can become a small pretend world that the child can explain in their own words.",
+            "title": "Build-and-Tell Practice",
+            "description": "The structure gives the child something they can explain, rename, and turn into a story.",
             "color": "blue"
         },
         {
-            "title": "Spatial Reasoning",
-            "description": "The child practiced thinking about beside, above, under, across, and connected spaces.",
+            "title": "Above-Below Thinking",
+            "description": "The child practiced noticing which parts are above, below, beside, or connected to other parts.",
             "color": "cream"
+        },
+        {
+            "title": "Small-World Making",
+            "description": "The build can become a tiny play world with places, paths, rooms, or moving parts.",
+            "color": "green"
+        },
+        {
+            "title": "Build Revision",
+            "description": "The child can look at the structure and decide what to add, remove, strengthen, or rename.",
+            "color": "blue"
         }
     ])
 
-    # Pick varied cards based on image hash
     seed_number = int(image_hash[:10], 16)
     random.Random(seed_number).shuffle(card_pool)
 
@@ -649,19 +734,21 @@ def creative_fallback_cards(build_guess, summary, noticed, image_hash):
     used_titles = set()
 
     for card in card_pool:
-        title_key = card["title"].lower()
-        if title_key in used_titles:
+        key = card["title"].lower()
+
+        if key in used_titles:
             continue
 
         selected.append(card)
-        used_titles.add(title_key)
+        used_titles.add(key)
 
         if len(selected) == 3:
             break
 
     colors = ["cream", "green", "blue"]
-    for i, card in enumerate(selected):
-        card["color"] = colors[i]
+
+    for index, card in enumerate(selected):
+        card["color"] = colors[index]
 
     return selected
 
@@ -673,36 +760,42 @@ def is_weak_learning_card(card):
     if not title or not description:
         return True
 
-    if len(description.split()) < 8:
-        return True
-
-    too_generic_titles = {
+    banned_titles = {
         "creativity",
-        "imagination",
+        "problem-solving",
         "problem solving",
+        "spatial awareness",
+        "spatial thinking",
+        "imagination",
         "motor skills",
+        "fine motor skills",
         "engineering",
         "stem learning",
         "critical thinking"
     }
 
-    evidence_words = [
-        "block", "base", "level", "floor", "support", "gap", "roof",
-        "wheel", "curve", "arch", "opening", "bridge", "stack",
-        "repeated", "path", "platform", "room", "shape", "piece"
-    ]
+    if title in banned_titles:
+        return True
 
-    if title in too_generic_titles:
-        return not any(word in description for word in evidence_words)
+    if len(description.split()) < 10:
+        return True
 
-    repeated_phrases = [
+    generic_phrases = [
+        "showed creativity",
         "used creativity",
+        "practiced problem-solving",
+        "practiced problem solving",
+        "demonstrated spatial awareness",
+        "showed imagination",
+        "developed motor skills",
         "improved problem solving",
-        "used imagination",
-        "developed motor skills"
+        "learned engineering"
     ]
 
-    return any(phrase in description for phrase in repeated_phrases)
+    if any(phrase in description for phrase in generic_phrases):
+        return True
+
+    return False
 
 
 def normalize_learning_cards(cards, build_guess, summary, noticed, image_hash):
@@ -730,14 +823,12 @@ def normalize_learning_cards(cards, build_guess, summary, noticed, image_hash):
                 "color": color
             }
 
-            # Skip weak generic AI cards
             if is_weak_learning_card(temp_card):
                 continue
 
             cleaned.append(temp_card)
 
     fallback_cards = creative_fallback_cards(build_guess, summary, noticed, image_hash)
-
     existing_titles = {card["title"].lower() for card in cleaned}
 
     for fallback in fallback_cards:
@@ -850,7 +941,6 @@ def analyze_with_gemini(pil_img, age, image_hash):
         raise RuntimeError("GEMINI_API_KEY not found")
 
     prompt = build_troy_prompt(age, image_hash)
-
     response = model.generate_content([prompt, pil_img])
 
     text = getattr(response, "text", "")
@@ -896,7 +986,7 @@ def analyze_with_groq(image_data_url, age, image_hash):
                 ]
             }
         ],
-        temperature=0.75,
+        temperature=0.78,
         top_p=0.95,
         max_completion_tokens=1500,
         response_format={
@@ -919,7 +1009,6 @@ def analyze_with_groq(image_data_url, age, image_hash):
 def analyze_image_with_fallback(pil_img, image_data_url, age, image_hash):
     errors = []
 
-    # Gemini first
     try:
         parsed = analyze_with_gemini(pil_img, age, image_hash)
         result = normalize_analysis_response(parsed, image_hash)
@@ -931,7 +1020,6 @@ def analyze_image_with_fallback(pil_img, image_data_url, age, image_hash):
         print("Gemini failed:", error_text)
         errors.append(f"Gemini: {error_text}")
 
-    # Groq fallback
     try:
         parsed = analyze_with_groq(image_data_url, age, image_hash)
         result = normalize_analysis_response(parsed, image_hash)
@@ -1028,7 +1116,6 @@ def analyze():
         save_cache(cache_key, result)
         sessions[result["session_id"]] = result
 
-        # Keep sessions small
         if len(sessions) > 50:
             oldest_key = next(iter(sessions))
             sessions.pop(oldest_key, None)
