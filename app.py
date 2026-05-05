@@ -32,7 +32,6 @@ CORS(app, origins=CORS_ORIGINS.split(","))
 sessions = {}
 
 ALLOWED_EXTENSIONS = {"png", "jpg", "jpeg", "webp"}
-
 MAX_BASE64_IMAGE_SIZE = 3_800_000
 
 
@@ -126,7 +125,6 @@ def extract_json_block(text):
 
     if text.startswith("```"):
         lines = text.splitlines()
-
         if len(lines) >= 3:
             text = "\n".join(lines[1:-1]).strip()
 
@@ -229,136 +227,18 @@ def image_file_to_data_url(image_file):
         if len(encoded.encode("utf-8")) <= MAX_BASE64_IMAGE_SIZE:
             return f"data:image/jpeg;base64,{encoded}"
 
-    raise ValueError("Image is too large even after compression. Please upload a smaller image.")
+    raise ValueError(
+        "Image is too large even after compression. Please upload a smaller image."
+    )
 
 
 # =========================================================
-# Guess repair + learning-card logic
+# Evidence + feedback logic
 # =========================================================
 
 def combined_evidence_text(visible_elements, extra_text=""):
     items = visible_elements or []
     return clean_sentence(" ".join(items) + " " + extra_text).lower()
-
-
-def derive_category_from_evidence(raw_category, visible_elements, extra_text=""):
-    category = clean_sentence(raw_category, "abstract").lower()
-    evidence = combined_evidence_text(visible_elements, extra_text)
-
-    tower_words = [
-        "tower", "stack", "stacked", "tall", "height", "vertical", "upward",
-        "on top", "above", "column"
-    ]
-
-    bridge_words = [
-        "bridge", "span", "across", "gap", "horizontal beam", "horizontal piece",
-        "two supports", "support on both sides", "connects"
-    ]
-
-    house_words = [
-        "house", "home", "roof", "triangle", "wall", "room", "door",
-        "window", "built space"
-    ]
-
-    vehicle_words = [
-        "vehicle", "car", "wheel", "wheels", "axle", "front", "back",
-        "body of a vehicle"
-    ]
-
-    animal_words = [
-        "animal", "head", "body", "leg", "legs", "neck", "tail", "face"
-    ]
-
-    road_words = [
-        "road", "path", "track", "route", "line", "trail"
-    ]
-
-    gate_words = [
-        "gate", "opening", "entrance", "doorway", "arch"
-    ]
-
-    castle_words = [
-        "castle", "fort", "wall", "turret"
-    ]
-
-    evidence_map = {
-        "tower": tower_words,
-        "bridge": bridge_words,
-        "house": house_words,
-        "vehicle": vehicle_words,
-        "animal": animal_words,
-        "road": road_words,
-        "gate": gate_words,
-        "castle": castle_words
-    }
-
-    # First: infer a category directly from visible evidence.
-    for possible_category, words in evidence_map.items():
-        if any(word in evidence for word in words):
-            return possible_category
-
-    # Second: keep the model category only if it is safe.
-    safe_categories = [
-        "tower", "bridge", "house", "vehicle", "animal",
-        "gate", "castle", "road", "abstract", "unclear", "unrelated"
-    ]
-
-    if category in safe_categories:
-        if category in ["tower", "bridge", "house", "vehicle", "animal", "road", "gate", "castle"]:
-            required_words = evidence_map.get(category, [])
-            has_support = any(word in evidence for word in required_words)
-
-            if not has_support:
-                return "abstract"
-
-        return category
-
-    return "abstract"
-
-
-def repair_weak_guess(build_category, title, subtitle, visible_elements, summary=""):
-    category = derive_category_from_evidence(
-        raw_category=build_category,
-        visible_elements=visible_elements,
-        extra_text=f"{title} {subtitle} {summary}"
-    )
-
-    safe_titles = {
-        "tower": "Tower-like block structure",
-        "bridge": "Bridge-like block structure",
-        "house": "House-like block structure",
-        "vehicle": "Vehicle-like block structure",
-        "animal": "Animal-like block structure",
-        "road": "Road or path-like block layout",
-        "gate": "Gate-like block structure",
-        "castle": "Castle-like block structure",
-        "abstract": "Abstract Troy block structure",
-        "unclear": "Unclear Troy block structure",
-        "unrelated": "Unclear image"
-    }
-
-    safe_subtitles = {
-        "tower": "The build appears to use height and stacking as the main idea.",
-        "bridge": "The build appears to use supports and a connecting section.",
-        "house": "The build appears to have parts that could represent a small built space.",
-        "vehicle": "The build could represent a vehicle if the child intended it that way.",
-        "animal": "The build could represent an animal if the child intended it that way.",
-        "road": "The build appears to arrange blocks like a path or route.",
-        "gate": "The build appears to include an opening or entrance-like shape.",
-        "castle": "The build appears to have castle-like parts such as height, walls, or sections.",
-        "abstract": "The child created an open-ended structure using block placement and shape.",
-        "unclear": "The build is visible, but the exact object is not clear from the image.",
-        "unrelated": "The image does not clearly show a Troy block build."
-    }
-
-    return {
-        "category": category,
-        "title": safe_titles.get(category, "Abstract Troy block structure"),
-        "subtitle": safe_subtitles.get(
-            category,
-            "The child created an open-ended structure using block placement and shape."
-        )
-    }
 
 
 def has_keyword(text, keywords):
@@ -372,7 +252,153 @@ def visible_phrase(visible_elements):
     return "the visible block arrangement"
 
 
+def derive_category_from_evidence(raw_category, visible_elements):
+    """
+    Uses visibleElements to verify the category.
+    This prevents Groq from saying 'car' or 'animal' with no evidence.
+    """
+    category = clean_sentence(raw_category, "abstract").lower()
+    evidence = combined_evidence_text(visible_elements)
+
+    proof_words = {
+        "tower": [
+            "tower", "stack", "stacked", "tall", "vertical", "height",
+            "column", "upward", "above", "on top"
+        ],
+        "bridge": [
+            "bridge", "span", "gap", "across", "support", "supports",
+            "horizontal", "beam", "connects"
+        ],
+        "house": [
+            "house", "home", "roof", "wall", "room", "door", "window",
+            "triangle", "built space"
+        ],
+        "vehicle": [
+            "vehicle", "car", "wheel", "wheels", "axle", "front", "back",
+            "base", "body"
+        ],
+        "animal": [
+            "animal", "head", "body", "leg", "legs", "neck", "tail",
+            "face"
+        ],
+        "gate": [
+            "gate", "opening", "entrance", "doorway", "arch", "curve"
+        ],
+        "castle": [
+            "castle", "fort", "wall", "tower", "turret"
+        ],
+        "road": [
+            "road", "path", "track", "route", "line", "trail"
+        ]
+    }
+
+    allowed_categories = [
+        "tower", "bridge", "house", "vehicle", "animal",
+        "gate", "castle", "road", "abstract", "unclear", "unrelated"
+    ]
+
+    if category not in allowed_categories:
+        category = "abstract"
+
+    if category in proof_words:
+        has_support = any(word in evidence for word in proof_words[category])
+
+        if has_support:
+            return category
+
+        # If model gave a specific object but visible evidence does not support it,
+        # make it safer instead of repeating a wrong guess.
+        return "abstract"
+
+    return category
+
+
+def repair_weak_guess(build_category, title, subtitle, visible_elements, summary=""):
+    """
+    Keeps Groq's unique guess when it is reasonable.
+    Only makes it safer if the guess is unsupported.
+    """
+    raw_category = clean_sentence(build_category, "abstract").lower()
+    raw_title = clean_sentence(title)
+    raw_subtitle = clean_sentence(subtitle)
+    raw_summary = clean_sentence(summary)
+
+    final_category = derive_category_from_evidence(raw_category, visible_elements)
+
+    title_lower = raw_title.lower()
+
+    object_words = [
+        "car", "dog", "cat", "house", "castle", "bridge", "tower",
+        "animal", "vehicle", "gate", "road"
+    ]
+
+    # If category became abstract, do not keep an overconfident object title.
+    if final_category in ["abstract", "unclear"]:
+        if raw_title and not any(word == title_lower for word in object_words):
+            if "block" in title_lower or "structure" in title_lower or "build" in title_lower:
+                final_title = raw_title
+            else:
+                final_title = f"{raw_title} block build"
+        else:
+            final_title = "Open-ended Troy block build"
+
+        if raw_subtitle:
+            final_subtitle = raw_subtitle
+        elif visible_elements:
+            final_subtitle = f"It uses visible details like {visible_elements[0]}."
+        else:
+            final_subtitle = "The child created an open-ended structure using Troy blocks."
+
+        return {
+            "category": final_category,
+            "title": final_title,
+            "subtitle": final_subtitle
+        }
+
+    # For supported categories, allow specific but cautious labels.
+    safe_category_titles = {
+        "tower": "Tower-like Troy block build",
+        "bridge": "Bridge-like Troy block build",
+        "house": "House-like Troy block build",
+        "vehicle": "Vehicle-like Troy block build",
+        "animal": "Animal-like Troy block build",
+        "gate": "Gate-like Troy block build",
+        "castle": "Castle-like Troy block build",
+        "road": "Road or path-like Troy block layout",
+        "unrelated": "Unclear image"
+    }
+
+    if raw_title and len(raw_title) >= 4:
+        if raw_title.lower() in object_words:
+            final_title = safe_category_titles.get(final_category, f"{raw_title} block build")
+        elif "block" not in title_lower and "structure" not in title_lower and "build" not in title_lower:
+            final_title = f"{raw_title} block build"
+        else:
+            final_title = raw_title
+    else:
+        final_title = safe_category_titles.get(final_category, "Troy block build")
+
+    if raw_subtitle:
+        final_subtitle = raw_subtitle
+    elif visible_elements:
+        final_subtitle = f"It seems to use details like {visible_elements[0]}."
+    elif raw_summary:
+        final_subtitle = raw_summary
+    else:
+        final_subtitle = "The child created a visible structure using Troy blocks."
+
+    return {
+        "category": final_category,
+        "title": final_title,
+        "subtitle": final_subtitle
+    }
+
+
 def build_learning_cards_from_evidence(category, visible_elements):
+    """
+    Backend-generated fallback cards.
+    These are used only if Groq gives empty or weak learning cards.
+    """
     evidence = combined_evidence_text(visible_elements)
     main_detail = visible_phrase(visible_elements)
 
@@ -381,18 +407,18 @@ def build_learning_cards_from_evidence(category, visible_elements):
     if has_keyword(evidence, ["stack", "stacked", "tall", "vertical", "height", "tower"]):
         cards.append({
             "title": "Stacking and Balance",
-            "description": f"The child practiced placing blocks carefully upward, especially around {main_detail}.",
+            "description": f"The child practiced placing blocks upward, especially around {main_detail}.",
             "color": "cream"
         })
 
-    if has_keyword(evidence, ["wide base", "base", "support", "steady", "stability"]):
+    if has_keyword(evidence, ["wide base", "base", "support", "supports", "steady", "stability"]):
         cards.append({
             "title": "Stability",
             "description": "The child explored how a stronger base or support can help the build stay steady.",
             "color": "green"
         })
 
-    if has_keyword(evidence, ["bridge", "span", "gap", "across", "horizontal", "connects"]):
+    if has_keyword(evidence, ["bridge", "span", "gap", "across", "horizontal", "beam", "connects"]):
         cards.append({
             "title": "Support and Span",
             "description": "The child explored how blocks can connect across a space or rest on supports.",
@@ -402,7 +428,7 @@ def build_learning_cards_from_evidence(category, visible_elements):
     if has_keyword(evidence, ["repeat", "repeated", "same", "pattern", "symmetry", "symmetrical"]):
         cards.append({
             "title": "Pattern Recognition",
-            "description": "The child noticed how repeated blocks or similar placements can make the build more organized.",
+            "description": "The child noticed how repeated blocks or similar placements can make a build more organized.",
             "color": "green"
         })
 
@@ -423,7 +449,7 @@ def build_learning_cards_from_evidence(category, visible_elements):
     if category == "tower":
         cards.append({
             "title": "Height Awareness",
-            "description": "The child explored how a build changes when pieces are placed higher.",
+            "description": "The child explored how a structure changes when pieces are placed higher.",
             "color": "cream"
         })
 
@@ -455,6 +481,20 @@ def build_learning_cards_from_evidence(category, visible_elements):
             "color": "cream"
         })
 
+    if category == "gate":
+        cards.append({
+            "title": "Open Space Awareness",
+            "description": "The child explored how blocks can create an entrance, opening, or arch-like space.",
+            "color": "green"
+        })
+
+    if category == "road":
+        cards.append({
+            "title": "Sequencing",
+            "description": "The child practiced placing blocks in an order to create a path or route.",
+            "color": "cream"
+        })
+
     if category in ["abstract", "unclear"]:
         cards.append({
             "title": "Spatial Thinking",
@@ -469,8 +509,8 @@ def build_learning_cards_from_evidence(category, visible_elements):
 
     default_cards = [
         {
-            "title": "Spatial Thinking",
-            "description": "The child practiced placing blocks in relation to each other.",
+            "title": "Block Placement",
+            "description": f"The child practiced placing pieces carefully around {main_detail}.",
             "color": "cream"
         },
         {
@@ -508,6 +548,7 @@ def build_learning_cards_from_evidence(category, visible_elements):
             "description": description,
             "color": color
         })
+
         used_titles.add(title.lower())
 
         if len(cleaned) == 3:
@@ -519,34 +560,44 @@ def build_learning_cards_from_evidence(category, visible_elements):
     return cleaned[:3]
 
 
-def is_generic_learning_card(card):
+def is_too_generic_card(card):
     title = clean_sentence(card.get("title")).lower()
     description = clean_sentence(card.get("description")).lower()
 
-    generic_titles = [
+    if not title or not description:
+        return True
+
+    # Very short descriptions usually feel repeated/generic.
+    if len(description.split()) < 8:
+        return True
+
+    weak_titles = [
         "creativity",
+        "imagination",
         "problem solving",
         "engineering",
         "stem learning",
-        "motor skills",
-        "imagination"
+        "motor skills"
     ]
 
-    if title in generic_titles:
-        return True
-
-    too_generic_phrases = [
-        "learned creativity",
-        "used imagination",
-        "developed problem solving",
-        "improved engineering skills",
-        "built something creative"
+    # Allow these only if the description has real visible evidence.
+    evidence_words = [
+        "stack", "base", "support", "gap", "bridge", "roof", "triangle",
+        "curve", "arch", "repeated", "horizontal", "vertical", "blocks",
+        "pieces", "path", "opening"
     ]
 
-    return any(phrase in description for phrase in too_generic_phrases)
+    if title in weak_titles:
+        return not any(word in description for word in evidence_words)
+
+    return False
 
 
 def choose_learning_cards(ai_cards, category, visible_elements):
+    """
+    Prefer Groq's unique cards.
+    Use backend fallback only when Groq is empty or too generic.
+    """
     backend_cards = build_learning_cards_from_evidence(category, visible_elements)
 
     if not isinstance(ai_cards, list) or len(ai_cards) < 3:
@@ -575,13 +626,29 @@ def choose_learning_cards(ai_cards, category, visible_elements):
             "color": color
         }
 
-        if is_generic_learning_card(temp_card):
-            return backend_cards
+        if is_too_generic_card(temp_card):
+            # Do not immediately reject all AI cards.
+            # Just skip weak cards and keep useful ones.
+            continue
 
         cleaned.append(temp_card)
 
+    # If Groq gave at least 2 good cards, keep them and fill the rest with backend cards.
+    if len(cleaned) >= 2:
+        existing_titles = {card["title"].lower() for card in cleaned}
+
+        for fallback in backend_cards:
+            if len(cleaned) >= 3:
+                break
+
+            if fallback["title"].lower() not in existing_titles:
+                cleaned.append(fallback)
+
     if len(cleaned) < 3:
-        return backend_cards
+        cleaned = backend_cards
+
+    for i, card in enumerate(cleaned[:3]):
+        card["color"] = allowed_colors[i]
 
     return cleaned[:3]
 
@@ -664,7 +731,7 @@ GUESSING RULES:
 - If it has wheels, axle-like parts, or clear vehicle shape: call it a vehicle-like structure.
 - If it has body + legs/head/neck shape: call it an animal-like structure.
 - If it has an entrance/opening/arch: call it a gate-like structure.
-- If it is not clear, call it an abstract block structure.
+- If it is not clear, call it an abstract or open-ended block structure.
 - Never confidently say car, dog, castle, or house unless there is strong visible evidence.
 - Use cautious language like "looks like", "seems like", or "could be" when uncertain.
 
@@ -682,6 +749,12 @@ Mention actual visible details such as:
 - gaps
 - loose blocks
 - connected sections
+
+UNIQUENESS RULE:
+This analysis must feel different for each uploaded build.
+Do not reuse the same buildGuess, learning card titles, or descriptions unless the visible build is actually very similar.
+Use the specific visibleElements to make every learning card different.
+Mention at least one unique visual detail from the photo in each learning description.
 
 INVALID IMAGE RULES:
 Mark imageStatus as "invalid" if:
@@ -814,8 +887,8 @@ def call_groq_vision(client, image_data_url, age):
                 ]
             }
         ],
-        temperature=0.25,
-        top_p=0.85,
+        temperature=0.55,
+        top_p=0.95,
         max_completion_tokens=1400,
         response_format={
             "type": "json_object"
@@ -912,17 +985,14 @@ def analyze():
             confidence_score = 0
 
         analysis_details = parsed.get("analysisDetails")
-
         if not isinstance(analysis_details, dict):
             analysis_details = {}
 
         raw_build_guess = parsed.get("buildGuess")
-
         if not isinstance(raw_build_guess, dict):
             raw_build_guess = {}
 
         what_found = parsed.get("whatWeFound")
-
         if not isinstance(what_found, dict):
             what_found = {}
 
@@ -962,10 +1032,15 @@ def analyze():
 
             if raw_summary:
                 final_summary = raw_summary
+            elif visible_elements:
+                final_summary = (
+                    f"This build has details like {', '.join(visible_elements[:2])}. "
+                    "The child used the blocks to explore shape, placement, and structure."
+                )
             else:
                 final_summary = (
-                    f"This looks like a {final_category}-style Troy block build. "
-                    "The visible blocks show arrangement, balance, and shape exploration."
+                    "This Troy build shows blocks arranged into a child-made structure. "
+                    "The exact object is open-ended, but the placement still shows creative building."
                 )
 
             result = {
@@ -1028,11 +1103,11 @@ def analyze():
                     "filename": original_filename,
                     "model": get_vision_model_name(),
                     "rawCategory": raw_build_category,
-                    "safeCategory": final_category
+                    "safeCategory": final_category,
+                    "rawTitle": raw_title
                 }
 
             sessions[session_id] = result
-
             return jsonify(result), 200
 
         invalid_reason = clean_sentence(
@@ -1172,7 +1247,7 @@ Keep it to 3 to 5 short lines.
                     "content": prompt
                 }
             ],
-            temperature=0.35,
+            temperature=0.45,
             top_p=0.9,
             max_completion_tokens=350
         )
