@@ -26,7 +26,7 @@ CORS(app, origins="*")
 sessions = {}
 
 groq_client = Groq(api_key=os.environ.get("GROQ_API_KEY", ""))
-GROQ_MODEL = "meta-llama/llama-4-scout-17b-16e-instruct"
+GROQ_MODEL = "meta-llama/llama-4-maverick-17b-128e-instruct"
 
 
 # -----------------------------
@@ -103,6 +103,14 @@ def ensure_thinking_meter(meter):
     }
 
 
+def ensure_star_rating(value):
+    try:
+        v = int(value)
+        return max(1, min(5, v))
+    except Exception:
+        return 3
+
+
 def is_rate_limit_error(error_text: str) -> bool:
     lower = error_text.lower()
     return "429" in error_text or "rate_limit" in lower or "too many" in lower
@@ -119,7 +127,6 @@ def is_temporary_error(error_text: str) -> bool:
 def preprocess_image(filepath) -> tuple[str, str]:
     img = Image.open(filepath)
 
-    # Auto rotate
     try:
         from PIL import ExifTags
         exif = img._getexif()
@@ -133,19 +140,16 @@ def preprocess_image(filepath) -> tuple[str, str]:
     except Exception:
         pass
 
-    # Upscale small images
     min_dim = min(img.width, img.height)
     if min_dim < 512:
         scale = 512 / min_dim
         img = img.resize((int(img.width * scale), int(img.height * scale)), Image.LANCZOS)
 
-    # Downscale large images
     max_dim = max(img.width, img.height)
     if max_dim > 2048:
         scale = 2048 / max_dim
         img = img.resize((int(img.width * scale), int(img.height * scale)), Image.LANCZOS)
 
-    # Enhance for better model perception
     try:
         img = ImageEnhance.Contrast(img).enhance(1.15)
         img = ImageEnhance.Sharpness(img).enhance(1.25)
@@ -153,7 +157,6 @@ def preprocess_image(filepath) -> tuple[str, str]:
     except Exception:
         pass
 
-    # Normalize to RGB
     if img.mode in ("RGBA", "P", "LA"):
         background = Image.new("RGB", img.size, (255, 255, 255))
         if img.mode == "P":
@@ -207,6 +210,7 @@ def build_invalid_photo_response(age, reason, noticed=None, suggestions=None, id
             "spatialSkills": 0,
             "focus": 0
         },
+        "starRating": 0,
         "session_id": session_id
     }
     sessions[session_id] = result
@@ -280,12 +284,12 @@ If ANY answer is NO → imageStatus must be "invalid".
 
 ## STEP 3 — DEEP VISUAL ANALYSIS (only if valid)
 
-Look at THIS specific image very carefully and answer all of these internally:
+Look at THIS specific image very carefully:
 
 EXACT SILHOUETTE OF THIS BUILD:
 - What is the precise overall outline of this specific structure?
 - Is it tall and thin like a tower or lighthouse?
-- Does it have a long narrow section rising from one end of a wider base — like a giraffe neck?
+- Does it have a long narrow section rising from one end of a wider base like a giraffe neck?
 - Does it have four leg-like protrusions extending outward from a central body?
 - Does it have a wide flat base with a pointed or domed top like a house?
 - Does it have a gap or opening in the middle like a bridge or arch?
@@ -297,7 +301,7 @@ EXACT STRUCTURE OF THIS BUILD:
 - Describe precisely where each block or group of blocks sits
 - Which blocks are on the bottom layer? What shapes are they?
 - Which blocks are stacked on top? What shapes?
-- Are any blocks sticking out to the sides — forming legs, wings, or arms?
+- Are any blocks sticking out to the sides forming legs, wings, or arms?
 - Is there a narrow connecting section between two wider sections?
 - Is there a small block on top that looks like a head?
 - What specific colors can you see on the blocks?
@@ -305,7 +309,6 @@ EXACT STRUCTURE OF THIS BUILD:
 
 WHAT THIS BUILD RESEMBLES:
 - Based ONLY on what you literally see in THIS image, what does this build most closely look like?
-- Do not guess — describe what the actual shape tells you
 - Consider all possibilities:
   Animals: giraffe, dog, cat, horse, elephant, dinosaur, snake, bird, crocodile, rabbit
   Buildings: house, castle, lighthouse, tower, barn, church, pyramid
@@ -316,7 +319,7 @@ WHAT THIS BUILD RESEMBLES:
 
 ## STEP 4 — NAME THIS SPECIFIC BUILD
 
-Based ONLY on your STEP 3 analysis of THIS image:
+Based ONLY on your STEP 3 analysis:
 - TALL NARROW stack rising from one side of a wider base → giraffe, lighthouse, rocket
 - FOUR OUTWARD PROTRUSIONS from a body → dog, horse, table, spider, crab
 - WIDE BASE with pointed or domed top → house, castle, barn, pyramid
@@ -324,27 +327,25 @@ Based ONLY on your STEP 3 analysis of THIS image:
 - LONG HORIZONTAL body with protrusions → train, snake, crocodile, car
 - SYMMETRIC TALL STACK → tower, skyscraper, lighthouse
 - ENCLOSED RECTANGULAR SHAPE → garage, barn, enclosure, room
-- The title MUST match your STEP 3 silhouette description exactly
 - NEVER use "Creative Troy block build" — always name based on actual shape
 
 ---
 
 ## STEP 5 — TROY THINKING METER
 
-Rate THIS specific build out of 6 for each metric.
-Base scores ONLY on what you actually see in THIS image:
+Rate THIS specific build out of 6 for each:
 
 creativity (1-6): How imaginative and original is THIS specific arrangement?
 - 1-2: Very basic stack of same blocks
 - 3-4: Some variety in shapes or arrangement
-- 5-6: Highly original, unexpected use of shapes, clearly represents something
+- 5-6: Highly original, unexpected use of shapes
 
 problemSolving (1-6): How complex and engineered is THIS specific structure?
 - 1-2: 1-3 blocks simply stacked
 - 3-4: 4-8 blocks with some planning
 - 5-6: 9+ blocks, complex layering, structural thinking visible
 
-spatialSkills (1-6): How well are blocks arranged and balanced in THIS build?
+spatialSkills (1-6): How well are blocks arranged and balanced?
 - 1-2: Blocks placed randomly, poor balance
 - 3-4: Some intentional placement, moderate balance
 - 5-6: Precise placement, excellent balance, clear spatial awareness
@@ -353,6 +354,17 @@ focus (1-6): How complete and detailed does THIS build appear?
 - 1-2: Looks unfinished or very minimal
 - 3-4: Reasonably complete, some detail
 - 5-6: Highly detailed, clearly complete, deliberate finishing touches
+
+---
+
+## STEP 6 — STAR RATING
+
+Give THIS build an overall star rating from 1 to 5:
+- 1 star: Very simple, 1-3 blocks loosely placed, minimal effort
+- 2 stars: Simple but deliberate, 4-6 blocks, basic structure
+- 3 stars: Medium complexity, 7-10 blocks or good creative structure
+- 4 stars: Complex and creative, 11-15 blocks or impressive design
+- 5 stars: Exceptional, 16+ blocks or highly creative and well-engineered build
 
 ---
 
@@ -367,11 +379,11 @@ IF VALID TROY BUILD:
   "imageStatus": "valid",
   "buildGuess": {{
     "title": "specific name based on THIS build's actual silhouette (max 6 words)",
-    "subtitle": "one sentence specific to THIS build — describe what makes it look like what you named it"
+    "subtitle": "one sentence specific to THIS build describing what makes it look like what you named it"
   }},
   "whatWeFound": {{
     "title": "What we found",
-    "summary": "2 sentences specific to THIS build — describe the actual shapes, colors, and arrangement you see"
+    "summary": "2 sentences specific to THIS build describing the actual shapes, colors, and arrangement you see"
   }},
   "whatTheyLearned": [
     {{
@@ -406,7 +418,8 @@ IF VALID TROY BUILD:
     "problemSolving": <integer 1-6 based on THIS build>,
     "spatialSkills": <integer 1-6 based on THIS build>,
     "focus": <integer 1-6 based on THIS build>
-  }}
+  }},
+  "starRating": <integer 1-5 based on overall build quality>
 }}
 
 IF INVALID / UNCLEAR / NOT TROY:
@@ -442,7 +455,8 @@ IF INVALID / UNCLEAR / NOT TROY:
     "problemSolving": 0,
     "spatialSkills": 0,
     "focus": 0
-  }}
+  }},
+  "starRating": 0
 }}
 
 ABSOLUTE RULES:
@@ -452,6 +466,7 @@ ABSOLUTE RULES:
 - whatTheyLearned descriptions must mention specific visible elements of THIS build
 - suggestionsForParent must reference THIS build's specific shapes and arrangement
 - troyThinkingMeter scores must reflect THIS build's actual complexity and quality
+- starRating must reflect the overall quality and complexity of THIS specific build
 - Two different builds must ALWAYS produce completely different responses
 - NEVER output "Creative Troy block build" as a title
 - Output JSON only — no markdown, no explanation outside JSON
@@ -466,7 +481,7 @@ ABSOLUTE RULES:
         messages=[
             {
                 "role": "system",
-                "content": "You are a precise visual analyst. You analyze each image individually and always output unique, specific responses based on what you actually see. Output only valid raw JSON — no markdown, no prose outside the JSON."
+                "content": "You are a precise visual analyst. You analyze each image individually and always output unique specific responses based on what you actually see. Output only valid raw JSON — no markdown, no prose outside the JSON."
             },
             {
                 "role": "user",
@@ -581,6 +596,9 @@ def analyze():
                 ),
                 "troyThinkingMeter": ensure_thinking_meter(
                     parsed.get("troyThinkingMeter")
+                ),
+                "starRating": ensure_star_rating(
+                    parsed.get("starRating", 3)
                 ),
                 "session_id": session_id
             }
