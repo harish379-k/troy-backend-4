@@ -7,12 +7,13 @@ import hashlib
 from io import BytesIO
 from pathlib import Path
 
-import requests
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from PIL import Image, ImageOps
 from dotenv import load_dotenv
 from werkzeug.utils import secure_filename
+
+import google.generativeai as genai
 from groq import Groq
 
 
@@ -34,7 +35,7 @@ CORS(app, origins=CORS_ORIGINS.split(","))
 ALLOWED_EXTENSIONS = {"png", "jpg", "jpeg", "webp"}
 MAX_BASE64_IMAGE_SIZE = 3_800_000
 
-# Simple memory cache to avoid re-analyzing same image while server is running
+# In-memory cache (same image + same age => reuse old result)
 analysis_cache = {}
 sessions = {}
 
@@ -43,15 +44,12 @@ sessions = {}
 # API config
 # =========================================================
 
-def get_openrouter_api_key():
-    return os.environ.get("OPENROUTER_API_KEY", "").strip()
+def get_gemini_api_key():
+    return os.environ.get("GEMINI_API_KEY", "").strip()
 
 
-def get_openrouter_model():
-    return os.environ.get(
-        "OPENROUTER_MODEL",
-        "meta-llama/llama-4-scout:free"
-    ).strip()
+def get_gemini_model():
+    return os.environ.get("GEMINI_MODEL", "gemini-2.5-flash").strip()
 
 
 def get_groq_api_key():
@@ -81,8 +79,28 @@ def build_groq_client():
     return Groq(api_key=key)
 
 
-print("OpenRouter key:", "FOUND" if get_openrouter_api_key() else "NOT FOUND")
-print("OpenRouter model:", get_openrouter_model())
+def build_gemini_model():
+    key = get_gemini_api_key()
+
+    if not key:
+        return None
+
+    genai.configure(api_key=key)
+
+    model = genai.GenerativeModel(
+        get_gemini_model(),
+        generation_config={
+            "temperature": 0.6,
+            "top_p": 0.95,
+            "max_output_tokens": 1600
+        }
+    )
+
+    return model
+
+
+print("Gemini key:", "FOUND" if get_gemini_api_key() else "NOT FOUND")
+print("Gemini model:", get_gemini_model())
 print("Groq key:", "FOUND" if get_groq_api_key() else "NOT FOUND")
 print("Groq vision model:", get_groq_vision_model())
 
@@ -130,6 +148,11 @@ def ensure_list(value, fallback=None, limit=3):
     return result[:limit]
 
 
+def safe_get_dict(data, key):
+    value = data.get(key)
+    return value if isinstance(value, dict) else {}
+
+
 def extract_json_block(text):
     if not text:
         return ""
@@ -138,7 +161,6 @@ def extract_json_block(text):
 
     if text.startswith("```"):
         lines = text.splitlines()
-
         if len(lines) >= 3:
             text = "\n".join(lines[1:-1]).strip()
 
@@ -156,21 +178,14 @@ def parse_json_response(text):
     return json.loads(cleaned)
 
 
-def safe_get_dict(data, key):
-    value = data.get(key)
-
-    if isinstance(value, dict):
-        return value
-
-    return {}
-
-
 def is_rate_limit_error(error_text):
     lower = error_text.lower()
     return (
         "429" in lower
         or "rate limit" in lower
+        or "resource_exhausted" in lower
         or "too many requests" in lower
+        or "quota" in lower
     )
 
 
@@ -179,9 +194,10 @@ def is_invalid_key_error(error_text):
     return (
         "401" in lower
         or "403" in lower
+        or "invalid api key" in lower
+        or "api key not valid" in lower
         or "unauthorized" in lower
         or "forbidden" in lower
-        or "invalid api key" in lower
     )
 
 
@@ -197,13 +213,23 @@ def is_temporary_error(error_text):
 
 
 # =========================================================
-# Image processing
+# Image helpers
 # =========================================================
 
-def image_to_data_url_and_hash(image_file):
+def encode_image_to_base64_jpeg(img, quality):
+    buffer = BytesIO()
+    img.save(buffer, format="JPEG", quality=quality, optimize=True)
+    raw_bytes = buffer.getvalue()
+    encoded = base64.b64encode(raw_bytes).decode("utf-8")
+    return raw_bytes, encoded
+
+
+def prepare_image_for_models(image_file):
     """
-    Converts upload into compressed JPEG base64 data URL.
-    Also returns hash so repeated same uploads can use cached result.
+    Returns:
+    - PIL image for Gemini
+    - data URL for Groq
+    - image hash for caching
     """
     img = Image.open(image_file.stream)
     img = ImageOps.exif_transpose(img)
@@ -213,41 +239,33 @@ def image_to_data_url_and_hash(image_file):
 
     img.thumbnail((1400, 1400))
 
-    final_bytes = None
-
     for quality in [85, 75, 65, 55, 45]:
-        buffer = BytesIO()
-        img.save(buffer, format="JPEG", quality=quality, optimize=True)
-        raw = buffer.getvalue()
-
-        encoded = base64.b64encode(raw).decode("utf-8")
+        raw_bytes, encoded = encode_image_to_base64_jpeg(img, quality)
 
         if len(encoded.encode("utf-8")) <= MAX_BASE64_IMAGE_SIZE:
-            final_bytes = raw
-            image_data_url = f"data:image/jpeg;base64,{encoded}"
-            image_hash = hashlib.sha256(raw).hexdigest()
-            return image_data_url, image_hash
+            pil_img = Image.open(BytesIO(raw_bytes))
+            pil_img = pil_img.convert("RGB")
+            image_hash = hashlib.sha256(raw_bytes).hexdigest()
+            data_url = f"data:image/jpeg;base64,{encoded}"
+            return pil_img, data_url, image_hash
 
     img.thumbnail((1000, 1000))
 
     for quality in [70, 60, 50, 40]:
-        buffer = BytesIO()
-        img.save(buffer, format="JPEG", quality=quality, optimize=True)
-        raw = buffer.getvalue()
-
-        encoded = base64.b64encode(raw).decode("utf-8")
+        raw_bytes, encoded = encode_image_to_base64_jpeg(img, quality)
 
         if len(encoded.encode("utf-8")) <= MAX_BASE64_IMAGE_SIZE:
-            final_bytes = raw
-            image_data_url = f"data:image/jpeg;base64,{encoded}"
-            image_hash = hashlib.sha256(raw).hexdigest()
-            return image_data_url, image_hash
+            pil_img = Image.open(BytesIO(raw_bytes))
+            pil_img = pil_img.convert("RGB")
+            image_hash = hashlib.sha256(raw_bytes).hexdigest()
+            data_url = f"data:image/jpeg;base64,{encoded}"
+            return pil_img, data_url, image_hash
 
     raise ValueError("Image is too large even after compression. Please upload a smaller image.")
 
 
 # =========================================================
-# Natural analysis prompt
+# Prompt
 # =========================================================
 
 def build_simple_troy_prompt(age):
@@ -266,14 +284,36 @@ Important:
 - Look at the whole image first.
 - Give a creative but realistic guess about what the child may have built.
 - Do not force labels like tower, house, bridge, or car.
-- If it looks like a hybrid idea, describe the hybrid. Example: moving house, house-on-wheels, bridge-house, layered building, castle gate, pretend-play scene, animal vehicle, abstract machine, etc.
-- If it has floors or sections going upward, do not automatically call it a tower. It may be a multi-level building, layered structure, raised house, or pretend-play scene.
+- If it looks like a hybrid idea, describe the hybrid naturally.
+  Examples:
+  - moving house
+  - house-on-wheels
+  - bridge-house
+  - layered building
+  - castle gate
+  - pretend-play scene
+  - animal-like vehicle
+  - abstract machine
+- If it has floors or sections going upward, do not automatically call it a tower.
+  It may be a multi-level building, layered structure, raised house, or pretend-play scene.
 - Base every statement only on visible details.
-- Mention visible parts such as base, floors, levels, blocks, gaps, supports, roof-like pieces, wheel-like pieces, curved pieces, repeated pieces, openings, or loose blocks.
+- Mention visible parts such as:
+  - base
+  - floors
+  - levels
+  - gaps
+  - supports
+  - repeated blocks
+  - stacked sections
+  - roof-like pieces
+  - wheel-like parts
+  - curved pieces
+  - openings
+  - loose blocks
 - If the image is not a Troy/block build, mark it invalid.
-- If you are unsure, use cautious words like "looks like", "could be", or "seems to".
+- If you are unsure, use cautious phrases like "looks like", "could be", or "seems to".
 - Keep the tone simple, warm, and parent-friendly.
-- Do not overclaim. Avoid big words like engineering mastery.
+- Do not overclaim.
 - Return JSON only.
 
 Return this exact JSON shape:
@@ -335,84 +375,6 @@ Rules for invalid image:
 # Response cleanup
 # =========================================================
 
-def normalize_analysis_response(parsed):
-    """
-    Keeps AI's natural answer, but guarantees frontend-safe structure.
-    """
-    image_status = clean_text(parsed.get("imageStatus", "invalid")).lower()
-
-    try:
-        confidence = int(float(parsed.get("confidenceScore", 0)))
-    except Exception:
-        confidence = 0
-
-    build_guess = safe_get_dict(parsed, "buildGuess")
-    what_found = safe_get_dict(parsed, "whatWeFound")
-
-    normalized = {
-        "status": "success",
-        "imageStatus": "valid" if image_status == "valid" and confidence >= 65 else "invalid",
-        "confidenceScore": confidence,
-        "buildGuess": {
-            "title": clean_text(
-                build_guess.get("title"),
-                "Open-ended Troy block build"
-            ),
-            "subtitle": clean_text(
-                build_guess.get("subtitle"),
-                "The child created a visible structure using blocks."
-            )
-        },
-        "whatWeFound": {
-            "title": "What we found",
-            "summary": clean_text(
-                what_found.get("summary"),
-                "The image shows a child-made block structure with visible block placement."
-            )
-        },
-        "whatTheyLearned": normalize_learning_cards(
-            parsed.get("whatTheyLearned")
-        ),
-        "whatWeNoticed": ensure_list(
-            parsed.get("whatWeNoticed"),
-            [
-                "The build shows visible blocks arranged into a structure.",
-                "The child used block placement to create a shape or idea.",
-                "The structure has details that can be discussed with the child."
-            ],
-            limit=3
-        ),
-        "suggestionsForParent": ensure_list(
-            parsed.get("suggestionsForParent"),
-            [
-                "Ask your child what each part of the build represents.",
-                "Invite your child to add one new detail to the build.",
-                "Take another photo after your child improves or changes the structure."
-            ],
-            limit=3
-        ),
-        "nextBuildIdeas": ensure_list(
-            parsed.get("nextBuildIdeas"),
-            [
-                "Build a version with one extra level or section.",
-                "Add a path, door, bridge, or moving part.",
-                "Try rebuilding the same idea using fewer blocks."
-            ],
-            limit=3
-        ),
-        "session_id": str(uuid.uuid4())
-    }
-
-    if normalized["imageStatus"] == "invalid":
-        normalized["whatTheyLearned"] = []
-        normalized["buildGuess"] = {
-            "title": "We couldn’t clearly analyze this image",
-            "subtitle": normalized["whatWeFound"]["summary"]
-        }
-
-    return normalized
-
-
 def normalize_learning_cards(cards):
     allowed_colors = ["cream", "green", "blue"]
     cleaned = []
@@ -459,7 +421,6 @@ def normalize_learning_cards(cards):
     for item in fallback:
         if len(cleaned) >= 3:
             break
-
         cleaned.append(item)
 
     for i, card in enumerate(cleaned[:3]):
@@ -468,70 +429,95 @@ def normalize_learning_cards(cards):
     return cleaned[:3]
 
 
+def normalize_analysis_response(parsed):
+    image_status = clean_text(parsed.get("imageStatus", "invalid")).lower()
+
+    try:
+        confidence = int(float(parsed.get("confidenceScore", 0)))
+    except Exception:
+        confidence = 0
+
+    build_guess = safe_get_dict(parsed, "buildGuess")
+    what_found = safe_get_dict(parsed, "whatWeFound")
+
+    result = {
+        "status": "success",
+        "imageStatus": "valid" if image_status == "valid" and confidence >= 65 else "invalid",
+        "confidenceScore": confidence,
+        "buildGuess": {
+            "title": clean_text(
+                build_guess.get("title"),
+                "Open-ended Troy block build"
+            ),
+            "subtitle": clean_text(
+                build_guess.get("subtitle"),
+                "The child created a visible structure using blocks."
+            )
+        },
+        "whatWeFound": {
+            "title": "What we found",
+            "summary": clean_text(
+                what_found.get("summary"),
+                "The image shows a child-made block structure with visible block placement."
+            )
+        },
+        "whatTheyLearned": normalize_learning_cards(parsed.get("whatTheyLearned")),
+        "whatWeNoticed": ensure_list(
+            parsed.get("whatWeNoticed"),
+            [
+                "The build shows visible blocks arranged into a structure.",
+                "The child used block placement to create a shape or idea.",
+                "The structure has details that can be discussed with the child."
+            ],
+            limit=3
+        ),
+        "suggestionsForParent": ensure_list(
+            parsed.get("suggestionsForParent"),
+            [
+                "Ask your child what each part of the build represents.",
+                "Invite your child to add one new detail to the build.",
+                "Take another photo after your child improves or changes the structure."
+            ],
+            limit=3
+        ),
+        "nextBuildIdeas": ensure_list(
+            parsed.get("nextBuildIdeas"),
+            [
+                "Build a version with one extra level or section.",
+                "Add a path, door, bridge, or moving part.",
+                "Try rebuilding the same idea using fewer blocks."
+            ],
+            limit=3
+        ),
+        "session_id": str(uuid.uuid4())
+    }
+
+    if result["imageStatus"] == "invalid":
+        result["whatTheyLearned"] = []
+        result["buildGuess"] = {
+            "title": "We couldn’t clearly analyze this image",
+            "subtitle": result["whatWeFound"]["summary"]
+        }
+
+    return result
+
+
 # =========================================================
-# OpenRouter analysis
+# Gemini analysis
 # =========================================================
 
-def analyze_with_openrouter(image_data_url, age):
-    api_key = get_openrouter_api_key()
+def analyze_with_gemini(pil_img, age):
+    model = build_gemini_model()
 
-    if not api_key:
-        raise RuntimeError("OPENROUTER_API_KEY not found")
+    if not model:
+        raise RuntimeError("GEMINI_API_KEY not found")
 
     prompt = build_simple_troy_prompt(age)
 
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json",
-        "HTTP-Referer": os.environ.get("APP_URL", "https://troy-world-demo"),
-        "X-Title": os.environ.get("APP_NAME", "Troy AI Analyzer")
-    }
+    response = model.generate_content([prompt, pil_img])
 
-    payload = {
-        "model": get_openrouter_model(),
-        "messages": [
-            {
-                "role": "system",
-                "content": "You are a careful visual analysis assistant. Return valid JSON only."
-            },
-            {
-                "role": "user",
-                "content": [
-                    {
-                        "type": "text",
-                        "text": prompt
-                    },
-                    {
-                        "type": "image_url",
-                        "image_url": {
-                            "url": image_data_url
-                        }
-                    }
-                ]
-            }
-        ],
-        "temperature": 0.7,
-        "top_p": 0.95,
-        "max_tokens": 1600,
-        "response_format": {
-            "type": "json_object"
-        }
-    }
-
-    response = requests.post(
-        "https://openrouter.ai/api/v1/chat/completions",
-        headers=headers,
-        json=payload,
-        timeout=60
-    )
-
-    if response.status_code >= 400:
-        raise RuntimeError(f"OpenRouter error {response.status_code}: {response.text}")
-
-    data = response.json()
-    content = data["choices"][0]["message"]["content"]
-
-    return parse_json_response(content)
+    text = getattr(response, "text", "")
+    return parse_json_response(text)
 
 
 # =========================================================
@@ -569,7 +555,7 @@ def analyze_with_groq(image_data_url, age):
                 ]
             }
         ],
-        temperature=0.7,
+        temperature=0.65,
         top_p=0.95,
         max_completion_tokens=1600,
         response_format={
@@ -577,28 +563,30 @@ def analyze_with_groq(image_data_url, age):
         }
     )
 
-    content = completion.choices[0].message.content
-    return parse_json_response(content)
+    text = completion.choices[0].message.content
+    return parse_json_response(text)
 
 
-def analyze_image_with_fallback(image_data_url, age):
-    """
-    First try OpenRouter.
-    If it fails, try Groq.
-    """
+# =========================================================
+# Main analysis with fallback
+# =========================================================
+
+def analyze_image_with_fallback(pil_img, image_data_url, age):
     errors = []
 
+    # Gemini first
     try:
-        parsed = analyze_with_openrouter(image_data_url, age)
+        parsed = analyze_with_gemini(pil_img, age)
         result = normalize_analysis_response(parsed)
-        result["provider"] = "openrouter"
+        result["provider"] = "gemini"
         return result
 
     except Exception as e:
         error_text = str(e)
-        print("OpenRouter failed:", error_text)
-        errors.append(f"OpenRouter: {error_text}")
+        print("Gemini failed:", error_text)
+        errors.append(f"Gemini: {error_text}")
 
+    # Groq fallback
     try:
         parsed = analyze_with_groq(image_data_url, age)
         result = normalize_analysis_response(parsed)
@@ -610,7 +598,7 @@ def analyze_image_with_fallback(image_data_url, age):
         print("Groq failed:", error_text)
         errors.append(f"Groq: {error_text}")
 
-    raise RuntimeError("Both OpenRouter and Groq failed. " + " | ".join(errors))
+    raise RuntimeError("Both Gemini and Groq failed. " + " | ".join(errors))
 
 
 # =========================================================
@@ -629,8 +617,8 @@ def home():
 def health():
     return jsonify({
         "status": "ok",
-        "openrouter_key_loaded": bool(get_openrouter_api_key()),
-        "openrouter_model": get_openrouter_model(),
+        "gemini_key_loaded": bool(get_gemini_api_key()),
+        "gemini_model": get_gemini_model(),
         "groq_key_loaded": bool(get_groq_api_key()),
         "groq_vision_model": get_groq_vision_model()
     })
@@ -657,7 +645,7 @@ def analyze():
         filename = secure_filename(image_file.filename)
 
         try:
-            image_data_url, image_hash = image_to_data_url_and_hash(image_file)
+            pil_img, image_data_url, image_hash = prepare_image_for_models(image_file)
         except Exception as e:
             return jsonify({
                 "error": "Could not process image.",
@@ -671,16 +659,15 @@ def analyze():
             cached["cached"] = True
             return jsonify(cached), 200
 
-        result = analyze_image_with_fallback(image_data_url, age)
-
+        result = analyze_image_with_fallback(pil_img, image_data_url, age)
         result["cached"] = False
 
         if os.environ.get("SHOW_DEBUG", "false").lower() == "true":
             result["debug"] = {
                 "filename": filename,
                 "image_hash": image_hash[:12],
-                "openrouter_model": get_openrouter_model(),
-                "groq_vision_model": get_groq_vision_model()
+                "gemini_model": get_gemini_model(),
+                "groq_model": get_groq_vision_model()
             }
 
         analysis_cache[cache_key] = result
@@ -694,12 +681,12 @@ def analyze():
 
         if is_rate_limit_error(error_text):
             return jsonify({
-                "error": "AI free usage limit reached right now. Please wait and try again."
+                "error": "AI usage limit reached right now. Please wait and try again."
             }), 429
 
         if is_invalid_key_error(error_text):
             return jsonify({
-                "error": "API key issue. Check OPENROUTER_API_KEY and GROQ_API_KEY in Render."
+                "error": "API key issue. Check GEMINI_API_KEY and GROQ_API_KEY in Render."
             }), 403
 
         if is_temporary_error(error_text):
@@ -766,13 +753,14 @@ Keep it to 3 to 5 short lines.
         answer = completion.choices[0].message.content
 
         return jsonify({
-            "answer": clean_text(answer, "I’m unable to answer that right now. Please try again.")
+            "answer": clean_text(
+                answer,
+                "I’m unable to answer that right now. Please try again."
+            )
         }), 200
 
     except Exception as e:
-        error_text = str(e)
-        print("Ask error:", error_text)
-
+        print("Ask error:", str(e))
         return jsonify({
             "answer": "Live Q&A is temporarily unavailable right now. Please try again later."
         }), 200
