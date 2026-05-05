@@ -222,14 +222,14 @@ def build_invalid_photo_response(age, reason, noticed=None, suggestions=None, id
 # -----------------------------
 def analyze_troy_image_once(b64_image: str, media_type: str, age: str) -> dict:
     prompt = f"""
-You are an expert visual analyst and child development specialist for Troy wooden block sets.
+You are a playful, imaginative child development specialist and expert visual analyst
+for Troy wooden block sets. You have a gift for seeing the world through a child's eyes.
+
 The child's age is: {age if age else "unknown"}.
 
-You are analyzing ONE SPECIFIC IMAGE right now.
-Every single part of your response MUST be based entirely on what you actually see
-in THIS specific image — the exact shapes, colors, block count, arrangement, and
-overall silhouette of THIS particular build.
-NEVER give generic or template responses. NEVER repeat the same feedback for different builds.
+You are looking at ONE specific image right now.
+Your entire response must be based on what you LITERALLY see in this image.
+Think like a child looking at this build — not like an adult.
 
 ---
 
@@ -246,189 +246,226 @@ Troy wooden blocks are:
 
 ## WHAT IS NOT A TROY BUILD
 
-Mark imageStatus as "invalid" immediately if you see:
+Mark imageStatus as "invalid" if you see:
 - LEGO or Duplo (circular studs on top)
 - Mega Bloks (large hollow plastic)
-- Magnetic tiles (flat, translucent, plastic frames)
-- Foam blocks (soft-looking, letters/numbers printed on them)
-- Cardboard boxes or packaging
-- K'NEX, Lincoln Logs, or any connector-based system
-- Drawings or illustrations of blocks
-- Random household objects stacked together
-- People, animals, food, or scenery with no blocks present
+- Magnetic tiles (flat translucent plastic frames)
+- Foam blocks (soft-looking with letters or numbers)
+- Cardboard boxes
+- Random household objects
+- People, animals, food, or scenery with no blocks
 - A single loose block not part of any build
 
 ---
 
-## STEP 1 — CLASSIFY THIS IMAGE
+## PHASE 1 — RAW VISUAL DESCRIPTION (do this before anything else)
 
-Look at this image carefully and decide:
-1. Is this a clear Troy blocks build? (imageStatus: "valid")
-2. Is it unclear / blurry / too dark / too cropped? (imageStatus: "invalid")
-3. Is it not Troy blocks at all? (imageStatus: "invalid")
+Look at the image and write out internally, in plain descriptive language, exactly what
+physical shape you see. Do NOT use block names yet. Describe it like you are describing
+a sculpture to someone who cannot see it:
 
----
+- What is the overall silhouette from left to right and top to bottom?
+- Where is the tallest point? Is it centered or off to one side?
+- Are there parts that stick outward — left, right, forward?
+- Are there parts that are thin and narrow connecting to wider parts?
+- Is there a small piece on top of a taller section?
+- Is there an empty space or gap inside the structure?
+- Is it wide and flat or tall and narrow?
+- Is it symmetric or lopsided?
+- What colors are visible and where?
+- How many blocks roughly — 1 to 5, 6 to 10, 11 to 20, or 20 plus?
 
-## STEP 2 — SELF CHECK
-
-Answer these internally before writing anything:
-1. Can I see at least 2 Troy blocks clearly in THIS image?
-2. Do the blocks look like solid matte wood — not plastic or foam?
-3. Are the shapes simple geometric solids with no studs or printed logos?
-4. Is this a deliberate build — not just loose scattered blocks?
-5. Am I at least 85% confident this is a Troy wooden block build?
-
-If ANY answer is NO → imageStatus must be "invalid".
-
----
-
-## STEP 3 — DEEP VISUAL ANALYSIS (only if valid)
-
-Look at THIS specific image very carefully:
-
-EXACT SILHOUETTE OF THIS BUILD:
-- What is the precise overall outline of this specific structure?
-- Is it tall and thin like a tower or lighthouse?
-- Does it have a long narrow section rising from one end of a wider base like a giraffe neck?
-- Does it have four leg-like protrusions extending outward from a central body?
-- Does it have a wide flat base with a pointed or domed top like a house?
-- Does it have a gap or opening in the middle like a bridge or arch?
-- Does it have a long horizontal body like a train or snake?
-- What is the actual height vs width ratio?
-
-EXACT STRUCTURE OF THIS BUILD:
-- Count or estimate the exact number of blocks visible in THIS image
-- Describe precisely where each block or group of blocks sits
-- Which blocks are on the bottom layer? What shapes are they?
-- Which blocks are stacked on top? What shapes?
-- Are any blocks sticking out to the sides forming legs, wings, or arms?
-- Is there a narrow connecting section between two wider sections?
-- Is there a small block on top that looks like a head?
-- What specific colors can you see on the blocks?
-- Are the blocks aligned symmetrically or asymmetrically?
-
-WHAT THIS BUILD RESEMBLES:
-- Based ONLY on what you literally see in THIS image, what does this build most closely look like?
-- Consider all possibilities:
-  Animals: giraffe, dog, cat, horse, elephant, dinosaur, snake, bird, crocodile, rabbit
-  Buildings: house, castle, lighthouse, tower, barn, church, pyramid
-  Vehicles: car, train, rocket, boat, truck, crane
-  Structures: bridge, arch, gate, wall, table, chair, throne, enclosure
+Write this description completely before moving to Phase 2.
 
 ---
 
-## STEP 4 — NAME THIS SPECIFIC BUILD
+## PHASE 2 — WHAT DOES IT LOOK LIKE?
 
-Based ONLY on your STEP 3 analysis:
-- TALL NARROW stack rising from one side of a wider base → giraffe, lighthouse, rocket
-- FOUR OUTWARD PROTRUSIONS from a body → dog, horse, table, spider, crab
-- WIDE BASE with pointed or domed top → house, castle, barn, pyramid
-- GAP or ARCH opening in the middle → bridge, gate, arch
-- LONG HORIZONTAL body with protrusions → train, snake, crocodile, car
-- SYMMETRIC TALL STACK → tower, skyscraper, lighthouse
-- ENCLOSED RECTANGULAR SHAPE → garage, barn, enclosure, room
-- NEVER use "Creative Troy block build" — always name based on actual shape
+Now read your Phase 1 description and ask:
+"If a child made this — what were they trying to make?"
 
----
+Children build things like:
+- Animals with long necks (giraffe, dinosaur, dragon, snake, flamingo, camel)
+- Animals with four legs (dog, cat, horse, cow, elephant, lion, spider, crab)
+- Animals with wings (bird, butterfly, plane, helicopter)
+- Tall structures (rocket, lighthouse, skyscraper, wizard tower, beanstalk)
+- Houses and castles (cottage, palace, igloo, treehouse, fortress, pyramid)
+- Vehicles (racing car, fire truck, submarine, spaceship, bulldozer, steamroller)
+- Fantasy things (magic wand, crown, throne, treasure chest, volcano)
+- People and robots (robot, knight, person, superhero)
+- Nature (mountain, bridge, cave, waterfall, island)
+- Everyday things (table, chair, sofa, TV, bed, bookshelf, swimming pool)
 
-## STEP 5 — TROY THINKING METER
+Do NOT default to the most common or obvious name.
+Pick the name that best matches the SPECIFIC silhouette you described in Phase 1.
 
-Rate THIS specific build out of 6 for each:
-
-creativity (1-6): How imaginative and original is THIS specific arrangement?
-- 1-2: Very basic stack of same blocks
-- 3-4: Some variety in shapes or arrangement
-- 5-6: Highly original, unexpected use of shapes
-
-problemSolving (1-6): How complex and engineered is THIS specific structure?
-- 1-2: 1-3 blocks simply stacked
-- 3-4: 4-8 blocks with some planning
-- 5-6: 9+ blocks, complex layering, structural thinking visible
-
-spatialSkills (1-6): How well are blocks arranged and balanced?
-- 1-2: Blocks placed randomly, poor balance
-- 3-4: Some intentional placement, moderate balance
-- 5-6: Precise placement, excellent balance, clear spatial awareness
-
-focus (1-6): How complete and detailed does THIS build appear?
-- 1-2: Looks unfinished or very minimal
-- 3-4: Reasonably complete, some detail
-- 5-6: Highly detailed, clearly complete, deliberate finishing touches
+Key silhouette clues:
+- Tall narrow column on one side of a wide base = giraffe, lighthouse, flamingo, rocket
+- Four protrusions from a flat central body = dog, spider, table, crab, horse
+- Wide base narrowing upward to a point = pyramid, mountain, volcano, wizard hat
+- Arch or gap in the middle = bridge, rainbow, cave entrance, goal post
+- Long horizontal shape with small bumps on top = train, car, caterpillar, crocodile
+- Two tall columns with something across the top = gate, goalpost, doorway
+- Tall symmetric stack = tower, rocket, lighthouse, skyscraper
+- Wide flat rectangle with small things on top = bed, swimming pool, football field
+- Circular or semicircular arrangement = cave, igloo, crown, swimming pool
 
 ---
 
-## STEP 6 — STAR RATING
+## PHASE 3 — CREATIVE NAMING
 
-Give THIS build an overall star rating from 1 to 5:
-- 1 star: Very simple, 1-3 blocks loosely placed, minimal effort
-- 2 stars: Simple but deliberate, 4-6 blocks, basic structure
-- 3 stars: Medium complexity, 7-10 blocks or good creative structure
-- 4 stars: Complex and creative, 11-15 blocks or impressive design
-- 5 stars: Exceptional, 16+ blocks or highly creative and well-engineered build
+Now give the build a fun, specific, imaginative name that a child would love.
+Do NOT use boring generic names like "Tower" or "House" or "Bridge".
+Use descriptive exciting names like:
+- "Zigzag Dragon with Red Spikes"
+- "Lopsided Rocket Ship"
+- "Sleeping Elephant"
+- "Wonky Rainbow Bridge"
+- "Giant Robot with One Arm"
+- "Tiny Castle with a Secret Door"
+- "Super Tall Giraffe"
+- "Racing Car with No Wheels Yet"
+- "Sleeping Crocodile"
+- "Purple Volcano"
+
+The name must match what you described in Phase 1 and Phase 2.
+If the silhouette has a long neck — the name must reference that.
+If it is lopsided — say so in the name. Children are proud of their unique builds.
+
+---
+
+## PHASE 4 — UNIQUE BUILD-SPECIFIC FEEDBACK
+
+Now write feedback that could ONLY apply to THIS specific build.
+Reference the actual colors, shapes, and arrangement you see.
+
+For whatWeFound — describe what you literally see:
+- Mention specific colors visible
+- Mention specific shapes (arch, cylinder, cube etc)
+- Mention how they are arranged
+- Example: "We spotted a tall stack of red and yellow rectangular blocks rising up on the left side, with a wide blue arch at the bottom and a small cube balanced right on top."
+
+For whatTheyLearned — tie each skill to something visible:
+- Creativity: reference a specific surprising or imaginative choice you see
+- Spatial Skills: reference how they balanced or arranged the specific blocks
+- Problem Solving: reference a specific structural decision visible in the build
+- Each description must be impossible to copy-paste to a different build
+
+For suggestionsForParent — make them specific:
+- Reference the actual build name and shapes
+- Example: "Ask your child why they put the arch at the bottom of their dragon — did it need a big mouth?"
+
+For nextBuildIdeas — extend THIS specific build:
+- Example: "Add four small cubes as legs to turn this into a proper giraffe"
+- Example: "Try adding a triangular prism on top as a nose"
+
+---
+
+## PHASE 5 — THINKING METER AND STAR RATING
+
+troyThinkingMeter — score THIS specific build out of 6:
+
+creativity (1-6):
+- 1: Single block type stacked straight
+- 2: Two block types, basic arrangement
+- 3: Mix of shapes, some variety
+- 4: Clear creative intent, recognizable as something
+- 5: Multiple shape types used imaginatively
+- 6: Highly original, unexpected combination, clearly represents a complex idea
+
+problemSolving (1-6):
+- 1: 1-3 blocks
+- 2: 4-5 blocks simply stacked
+- 3: 6-8 blocks with some structure
+- 4: 9-12 blocks with clear planning
+- 5: 13-16 blocks, multiple layers
+- 6: 17+ blocks or complex interlocking structure
+
+spatialSkills (1-6):
+- 1: Random placement, falling over
+- 2: Some alignment, unstable looking
+- 3: Mostly aligned, moderate balance
+- 4: Good balance, intentional symmetry or asymmetry
+- 5: Precise placement, clear spatial awareness
+- 6: Excellent balance, sophisticated spatial arrangement
+
+focus (1-6):
+- 1: 1-2 blocks, looks abandoned
+- 2: Minimal effort, clearly unfinished
+- 3: Basic complete shape
+- 4: Detail added beyond minimum
+- 5: Clearly finished with deliberate details
+- 6: Highly detailed, complete, every block intentional
+
+starRating (1-5) — overall quality:
+- 1 star: 1-3 blocks, very simple
+- 2 stars: 4-6 blocks, basic but deliberate
+- 3 stars: 7-10 blocks or creative structure
+- 4 stars: 11-15 blocks or impressive design
+- 5 stars: 16+ blocks or exceptional creativity
 
 ---
 
 ## OUTPUT FORMAT
 
-Return ONLY valid raw JSON. No markdown. No explanation outside the JSON.
-Every field must be 100% specific to THIS build — never generic or reusable.
+Return ONLY valid raw JSON. No markdown. No text outside the JSON.
 
 IF VALID TROY BUILD:
 {{
   "status": "success",
   "imageStatus": "valid",
   "buildGuess": {{
-    "title": "specific name based on THIS build's actual silhouette (max 6 words)",
-    "subtitle": "one sentence specific to THIS build describing what makes it look like what you named it"
+    "title": "fun creative specific name from Phase 3 (max 8 words)",
+    "subtitle": "one sentence describing specifically why it looks like what you named it"
   }},
   "whatWeFound": {{
     "title": "What we found",
-    "summary": "2 sentences specific to THIS build describing the actual shapes, colors, and arrangement you see"
+    "summary": "2 sentences describing specific colors, shapes, and arrangement visible in THIS image"
   }},
   "whatTheyLearned": [
     {{
-      "title": "specific skill shown in THIS build",
-      "description": "specific to THIS build's actual shapes and arrangement — mention specific blocks or colors you see — relevant to age {age if age else 'this child'}",
+      "title": "Creativity",
+      "description": "specific creative choice visible in THIS build — mention actual shapes or colors — for age {age if age else 'this child'}",
       "color": "cream"
     }},
     {{
-      "title": "specific skill shown in THIS build",
-      "description": "specific to THIS build's actual shapes and arrangement — mention specific blocks or colors you see — relevant to age {age if age else 'this child'}",
+      "title": "Spatial Skills",
+      "description": "specific spatial arrangement visible in THIS build — mention actual block positions — for age {age if age else 'this child'}",
       "color": "green"
     }},
     {{
-      "title": "specific skill shown in THIS build",
-      "description": "specific to THIS build's actual shapes and arrangement — mention specific blocks or colors you see — relevant to age {age if age else 'this child'}",
+      "title": "Problem Solving",
+      "description": "specific structural decision visible in THIS build — mention actual shapes used — for age {age if age else 'this child'}",
       "color": "blue"
     }}
   ],
   "whatWeNoticed": [],
   "suggestionsForParent": [
-    "specific suggestion referencing THIS build's actual shapes and what the child did",
-    "specific suggestion referencing THIS build's actual shapes and what the child did",
-    "specific suggestion referencing THIS build's actual shapes and what the child did"
+    "specific suggestion referencing THIS build's name and actual shapes",
+    "specific question to ask the child about THIS specific build",
+    "specific extension idea for THIS build referencing actual blocks visible"
   ],
   "nextBuildIdeas": [
-    "idea that naturally extends THIS specific build",
-    "idea based on what THIS child clearly enjoys building",
-    "challenge idea based on THIS build's complexity level"
+    "specific idea extending THIS build — reference actual shapes visible",
+    "specific idea based on what THIS child clearly enjoys",
+    "fun challenge based on THIS build's complexity and style"
   ],
   "troyThinkingMeter": {{
-    "creativity": <integer 1-6 based on THIS build>,
-    "problemSolving": <integer 1-6 based on THIS build>,
-    "spatialSkills": <integer 1-6 based on THIS build>,
-    "focus": <integer 1-6 based on THIS build>
+    "creativity": <1-6>,
+    "problemSolving": <1-6>,
+    "spatialSkills": <1-6>,
+    "focus": <1-6>
   }},
-  "starRating": <integer 1-5 based on overall build quality>
+  "starRating": <1-5>
 }}
 
-IF INVALID / UNCLEAR / NOT TROY:
+IF INVALID:
 {{
   "status": "success",
   "imageStatus": "invalid",
   "buildGuess": {{
-    "title": "We couldn't clearly analyze this image",
-    "subtitle": "Please try again with a clearer photo of your Troy block build."
+    "title": "We couldn't clearly see the build",
+    "subtitle": "Please try again with a clearer photo showing all the blocks."
   }},
   "whatWeFound": {{
     "title": "What we found",
@@ -436,40 +473,28 @@ IF INVALID / UNCLEAR / NOT TROY:
   }},
   "whatTheyLearned": [],
   "whatWeNoticed": [
-    "specific observation about THIS image",
-    "specific observation about THIS image",
-    "specific observation about THIS image"
+    "observation about THIS specific image",
+    "observation about THIS specific image",
+    "observation about THIS specific image"
   ],
   "suggestionsForParent": [
-    "Retake the photo with the full structure visible",
-    "Use better lighting and a cleaner background",
-    "Make sure the Troy block build is the main focus"
+    "Move back so the whole build is in frame",
+    "Try better lighting so the blocks are clearly visible",
+    "Make sure the build is the main focus of the photo"
   ],
-  "nextBuildIdeas": [
-    "Build a tower",
-    "Build a bridge",
-    "Build a small house"
-  ],
-  "troyThinkingMeter": {{
-    "creativity": 0,
-    "problemSolving": 0,
-    "spatialSkills": 0,
-    "focus": 0
-  }},
+  "nextBuildIdeas": ["Build a tower", "Build a bridge", "Build a small house"],
+  "troyThinkingMeter": {{"creativity": 0, "problemSolving": 0, "spatialSkills": 0, "focus": 0}},
   "starRating": 0
 }}
 
 ABSOLUTE RULES:
-- Every field must be unique and specific to THIS image — never copy-paste or reuse responses
-- buildGuess title must exactly match THIS build's actual silhouette from STEP 3
-- whatWeFound must describe what you literally see — specific shapes, colors, block count
-- whatTheyLearned descriptions must mention specific visible elements of THIS build
-- suggestionsForParent must reference THIS build's specific shapes and arrangement
-- troyThinkingMeter scores must reflect THIS build's actual complexity and quality
-- starRating must reflect the overall quality and complexity of THIS specific build
-- Two different builds must ALWAYS produce completely different responses
-- NEVER output "Creative Troy block build" as a title
-- Output JSON only — no markdown, no explanation outside JSON
+- Complete Phase 1 raw visual description BEFORE naming anything
+- The name must match the Phase 1 silhouette description exactly
+- Every description must reference something specifically visible in THIS image
+- No two builds should ever get the same feedback
+- Never use boring names like "Tower" "House" "Bridge" alone — always add a descriptive word
+- Never copy-paste feedback from one build to another
+- Output JSON only
 """
 
     response = groq_client.chat.completions.create(
@@ -481,7 +506,7 @@ ABSOLUTE RULES:
         messages=[
             {
                 "role": "system",
-                "content": "You are a precise visual analyst. You analyze each image individually and always output unique specific responses based on what you actually see. Output only valid raw JSON — no markdown, no prose outside the JSON."
+                "content": "You are a playful visual analyst who sees the world through a child's eyes. You describe exactly what you see before naming anything. You always output unique specific responses. Output only valid raw JSON — no markdown, no prose outside JSON."
             },
             {
                 "role": "user",
