@@ -148,7 +148,6 @@ def parse_json_response(text):
 
 def is_rate_limit_error(error_text):
     lower = error_text.lower()
-
     return (
         "429" in lower
         or "rate limit" in lower
@@ -159,7 +158,6 @@ def is_rate_limit_error(error_text):
 
 def is_invalid_key_error(error_text):
     lower = error_text.lower()
-
     return (
         "401" in lower
         or "403" in lower
@@ -171,7 +169,6 @@ def is_invalid_key_error(error_text):
 
 def is_image_too_large_error(error_text):
     lower = error_text.lower()
-
     return (
         "413" in lower
         or "payload too large" in lower
@@ -182,7 +179,6 @@ def is_image_too_large_error(error_text):
 
 def is_temporary_error(error_text):
     lower = error_text.lower()
-
     return (
         "503" in lower
         or "502" in lower
@@ -233,7 +229,7 @@ def image_file_to_data_url(image_file):
 
 
 # =========================================================
-# Evidence + feedback logic
+# Evidence + creative category logic
 # =========================================================
 
 def combined_evidence_text(visible_elements, extra_text=""):
@@ -252,62 +248,169 @@ def visible_phrase(visible_elements):
     return "the visible block arrangement"
 
 
-def derive_category_from_evidence(raw_category, visible_elements):
+def detect_features(evidence):
     """
-    Uses visibleElements to verify the category.
-    This prevents Groq from saying 'car' or 'animal' with no evidence.
+    Detects visible-supported features.
+    This allows creative hybrid guesses but prevents random guesses.
     """
-    category = clean_sentence(raw_category, "abstract").lower()
-    evidence = combined_evidence_text(visible_elements)
 
-    proof_words = {
-        "tower": [
-            "tower", "stack", "stacked", "tall", "vertical", "height",
-            "column", "upward", "above", "on top"
-        ],
-        "bridge": [
-            "bridge", "span", "gap", "across", "support", "supports",
-            "horizontal", "beam", "connects"
-        ],
-        "house": [
-            "house", "home", "roof", "wall", "room", "door", "window",
-            "triangle", "built space"
-        ],
-        "vehicle": [
-            "vehicle", "car", "wheel", "wheels", "axle", "front", "back",
-            "base", "body"
-        ],
-        "animal": [
-            "animal", "head", "body", "leg", "legs", "neck", "tail",
-            "face"
-        ],
-        "gate": [
-            "gate", "opening", "entrance", "doorway", "arch", "curve"
-        ],
-        "castle": [
-            "castle", "fort", "wall", "tower", "turret"
-        ],
-        "road": [
-            "road", "path", "track", "route", "line", "trail"
-        ]
+    multi_level_words = [
+        "floor", "floors", "level", "levels", "storey", "storeys",
+        "story", "stories", "platform", "platforms", "layer", "layers",
+        "terrace", "balcony", "upper level", "lower level", "multi-level",
+        "multiple levels", "stacked floors", "horizontal layers",
+        "sections above", "rooms", "room-like", "building-like",
+        "second floor", "two floors", "three floors"
+    ]
+
+    tower_words = [
+        "tower", "narrow", "single column", "column", "pillar",
+        "vertical stack", "tall stack", "stacked upward", "one above another"
+    ]
+
+    bridge_words = [
+        "bridge", "span", "gap", "across", "support", "supports",
+        "horizontal beam", "beam across", "connects two sides",
+        "two supports", "raised path"
+    ]
+
+    house_words = [
+        "house", "home", "roof", "wall", "walls", "room", "door",
+        "window", "triangle roof", "built space", "cabin", "shelter",
+        "roof-like", "house-like"
+    ]
+
+    vehicle_words = [
+        "vehicle", "car", "wheel", "wheels", "axle", "front", "back",
+        "moving", "base with wheels", "rolling", "truck", "bus", "car-like",
+        "vehicle-like"
+    ]
+
+    animal_words = [
+        "animal", "head", "body", "leg", "legs", "neck", "tail", "face",
+        "creature", "animal-like"
+    ]
+
+    gate_words = [
+        "gate", "opening", "entrance", "doorway", "arch", "curve",
+        "archway"
+    ]
+
+    castle_words = [
+        "castle", "fort", "wall", "turret", "battlement", "castle-like"
+    ]
+
+    road_words = [
+        "road", "path", "track", "route", "line", "trail", "way"
+    ]
+
+    scene_words = [
+        "scene", "play area", "pretend", "story", "village", "town",
+        "setup", "arrangement"
+    ]
+
+    return {
+        "multi_level": has_keyword(evidence, multi_level_words),
+        "tower": has_keyword(evidence, tower_words),
+        "bridge": has_keyword(evidence, bridge_words),
+        "house": has_keyword(evidence, house_words),
+        "vehicle": has_keyword(evidence, vehicle_words),
+        "animal": has_keyword(evidence, animal_words),
+        "gate": has_keyword(evidence, gate_words),
+        "castle": has_keyword(evidence, castle_words),
+        "road": has_keyword(evidence, road_words),
+        "scene": has_keyword(evidence, scene_words),
     }
 
+
+def derive_category_from_evidence(raw_category, visible_elements, raw_title="", raw_subtitle="", raw_summary=""):
+    """
+    Strict + creative classifier.
+
+    Fixes:
+    - A build with floors going up is multi_level, not automatically tower.
+    - A car with a house on top becomes house_vehicle.
+    - Hybrid builds are allowed only when multiple visible features are detected.
+    """
+    category = clean_sentence(raw_category, "abstract").lower()
+
+    evidence = combined_evidence_text(
+        visible_elements,
+        extra_text=f"{raw_category} {raw_title} {raw_subtitle} {raw_summary}"
+    )
+
+    features = detect_features(evidence)
+
     allowed_categories = [
-        "tower", "bridge", "house", "vehicle", "animal",
-        "gate", "castle", "road", "abstract", "unclear", "unrelated"
+        "house_vehicle",
+        "multi_level_house",
+        "bridge_house",
+        "castle_gate",
+        "multi_level",
+        "tower",
+        "bridge",
+        "house",
+        "vehicle",
+        "animal",
+        "gate",
+        "castle",
+        "road",
+        "scene",
+        "abstract",
+        "unclear",
+        "unrelated"
     ]
 
     if category not in allowed_categories:
         category = "abstract"
 
-    if category in proof_words:
-        has_support = any(word in evidence for word in proof_words[category])
+    # Highest priority: supported hybrid builds.
+    if features["house"] and features["vehicle"]:
+        return "house_vehicle"
 
-        if has_support:
-            return category
+    if features["multi_level"] and features["house"]:
+        return "multi_level_house"
 
-        # If model gave a specific object but visible evidence does not support it,
-        # make it safer instead of repeating a wrong guess.
+    if features["bridge"] and features["house"]:
+        return "bridge_house"
+
+    if features["castle"] and features["gate"]:
+        return "castle_gate"
+
+    # Then more specific single categories.
+    if features["multi_level"]:
+        return "multi_level"
+
+    if features["bridge"]:
+        return "bridge"
+
+    if features["house"]:
+        return "house"
+
+    if features["vehicle"]:
+        return "vehicle"
+
+    if features["animal"]:
+        return "animal"
+
+    if features["gate"]:
+        return "gate"
+
+    if features["castle"]:
+        return "castle"
+
+    if features["road"]:
+        return "road"
+
+    if features["scene"]:
+        return "scene"
+
+    # Tower only when evidence is clearly a narrow vertical stack.
+    # Height alone should not become tower.
+    if features["tower"]:
+        return "tower"
+
+    if category == "tower":
         return "abstract"
 
     return category
@@ -315,48 +418,30 @@ def derive_category_from_evidence(raw_category, visible_elements):
 
 def repair_weak_guess(build_category, title, subtitle, visible_elements, summary=""):
     """
-    Keeps Groq's unique guess when it is reasonable.
-    Only makes it safer if the guess is unsupported.
+    Keeps Groq's creative guess when it is supported.
+    Corrects unsupported guesses.
     """
     raw_category = clean_sentence(build_category, "abstract").lower()
     raw_title = clean_sentence(title)
     raw_subtitle = clean_sentence(subtitle)
     raw_summary = clean_sentence(summary)
 
-    final_category = derive_category_from_evidence(raw_category, visible_elements)
+    final_category = derive_category_from_evidence(
+        raw_category,
+        visible_elements,
+        raw_title=raw_title,
+        raw_subtitle=raw_subtitle,
+        raw_summary=raw_summary
+    )
 
     title_lower = raw_title.lower()
 
-    object_words = [
-        "car", "dog", "cat", "house", "castle", "bridge", "tower",
-        "animal", "vehicle", "gate", "road"
-    ]
-
-    # If category became abstract, do not keep an overconfident object title.
-    if final_category in ["abstract", "unclear"]:
-        if raw_title and not any(word == title_lower for word in object_words):
-            if "block" in title_lower or "structure" in title_lower or "build" in title_lower:
-                final_title = raw_title
-            else:
-                final_title = f"{raw_title} block build"
-        else:
-            final_title = "Open-ended Troy block build"
-
-        if raw_subtitle:
-            final_subtitle = raw_subtitle
-        elif visible_elements:
-            final_subtitle = f"It uses visible details like {visible_elements[0]}."
-        else:
-            final_subtitle = "The child created an open-ended structure using Troy blocks."
-
-        return {
-            "category": final_category,
-            "title": final_title,
-            "subtitle": final_subtitle
-        }
-
-    # For supported categories, allow specific but cautious labels.
     safe_category_titles = {
+        "house_vehicle": "House-on-wheels Troy build",
+        "multi_level_house": "Multi-level house-like Troy build",
+        "bridge_house": "Bridge-house Troy build",
+        "castle_gate": "Castle-gate Troy build",
+        "multi_level": "Multi-level Troy block structure",
         "tower": "Tower-like Troy block build",
         "bridge": "Bridge-like Troy block build",
         "house": "House-like Troy block build",
@@ -365,9 +450,49 @@ def repair_weak_guess(build_category, title, subtitle, visible_elements, summary
         "gate": "Gate-like Troy block build",
         "castle": "Castle-like Troy block build",
         "road": "Road or path-like Troy block layout",
+        "scene": "Pretend-play Troy block scene",
+        "abstract": "Open-ended Troy block build",
+        "unclear": "Open-ended Troy block build",
         "unrelated": "Unclear image"
     }
 
+    safe_category_subtitles = {
+        "house_vehicle": "The build seems to combine a vehicle-like base with a house or room-like top section.",
+        "multi_level_house": "The build appears to have house-like parts arranged across more than one level.",
+        "bridge_house": "The build seems to combine a bridge-like connection with a small built space.",
+        "castle_gate": "The build appears to include a gate or entrance with castle-like sections.",
+        "multi_level": "The build appears to have floors, layers, or sections placed above each other.",
+        "tower": "The build appears to be mainly a narrow upward stack.",
+        "bridge": "The build appears to use supports and a connecting section.",
+        "house": "The build appears to have parts that could represent a built space.",
+        "vehicle": "The build could represent a vehicle if the child intended it that way.",
+        "animal": "The build could represent an animal if the child intended it that way.",
+        "gate": "The build appears to include an opening or entrance-like shape.",
+        "castle": "The build appears to have castle-like parts such as walls, sections, or height.",
+        "road": "The build appears to arrange blocks like a path or route.",
+        "scene": "The build looks like a small pretend-play setup made from blocks.",
+        "abstract": "The child created an open-ended structure using block placement and shape.",
+        "unclear": "The build is visible, but the exact object is not clear from the image.",
+        "unrelated": "The image does not clearly show a Troy block build."
+    }
+
+    # For supported hybrid categories, prefer strong creative titles.
+    if final_category in ["house_vehicle", "multi_level_house", "bridge_house", "castle_gate"]:
+        final_title = safe_category_titles[final_category]
+        final_subtitle = safe_category_subtitles[final_category]
+
+        return {
+            "category": final_category,
+            "title": final_title,
+            "subtitle": final_subtitle
+        }
+
+    object_words = [
+        "car", "dog", "cat", "house", "castle", "bridge", "tower",
+        "animal", "vehicle", "gate", "road", "building"
+    ]
+
+    # Keep Groq's unique title if it is useful and not overconfident.
     if raw_title and len(raw_title) >= 4:
         if raw_title.lower() in object_words:
             final_title = safe_category_titles.get(final_category, f"{raw_title} block build")
@@ -381,11 +506,14 @@ def repair_weak_guess(build_category, title, subtitle, visible_elements, summary
     if raw_subtitle:
         final_subtitle = raw_subtitle
     elif visible_elements:
-        final_subtitle = f"It seems to use details like {visible_elements[0]}."
+        final_subtitle = f"It seems to use visible details like {visible_elements[0]}."
     elif raw_summary:
         final_subtitle = raw_summary
     else:
-        final_subtitle = "The child created a visible structure using Troy blocks."
+        final_subtitle = safe_category_subtitles.get(
+            final_category,
+            "The child created a visible structure using Troy blocks."
+        )
 
     return {
         "category": final_category,
@@ -394,15 +522,110 @@ def repair_weak_guess(build_category, title, subtitle, visible_elements, summary
     }
 
 
+# =========================================================
+# Learning card logic
+# =========================================================
+
 def build_learning_cards_from_evidence(category, visible_elements):
-    """
-    Backend-generated fallback cards.
-    These are used only if Groq gives empty or weak learning cards.
-    """
     evidence = combined_evidence_text(visible_elements)
     main_detail = visible_phrase(visible_elements)
 
     cards = []
+
+    if category == "house_vehicle":
+        cards.extend([
+            {
+                "title": "Combining Ideas",
+                "description": "The child combined two ideas: a moving base and a house-like top section.",
+                "color": "cream"
+            },
+            {
+                "title": "Part-to-Whole Design",
+                "description": "The child explored how different parts can work together as one bigger build.",
+                "color": "green"
+            },
+            {
+                "title": "Pretend-Play Storytelling",
+                "description": "A house-on-wheels idea can become a story about travel, homes, or movement.",
+                "color": "blue"
+            }
+        ])
+
+    if category == "multi_level_house":
+        cards.extend([
+            {
+                "title": "Layered Building",
+                "description": "The child explored how one floor or section can sit above another.",
+                "color": "cream"
+            },
+            {
+                "title": "Support Planning",
+                "description": "The build shows thinking about how lower parts support upper levels.",
+                "color": "green"
+            },
+            {
+                "title": "Structure Organization",
+                "description": "The child practiced arranging a building into separate levels or spaces.",
+                "color": "blue"
+            }
+        ])
+
+    if category == "bridge_house":
+        cards.extend([
+            {
+                "title": "Connection Design",
+                "description": "The child explored how a bridge-like section can connect parts of a structure.",
+                "color": "cream"
+            },
+            {
+                "title": "Support and Balance",
+                "description": "The build encourages thinking about how raised parts stay steady.",
+                "color": "green"
+            },
+            {
+                "title": "Creative Combination",
+                "description": "The child combined a pathway idea with a built-space idea.",
+                "color": "blue"
+            }
+        ])
+
+    if category == "castle_gate":
+        cards.extend([
+            {
+                "title": "Entrance Design",
+                "description": "The child explored how blocks can create an opening or gate-like space.",
+                "color": "cream"
+            },
+            {
+                "title": "Pretend Structure",
+                "description": "Castle-like parts can support storytelling about forts, gates, or protected spaces.",
+                "color": "green"
+            },
+            {
+                "title": "Shape Arrangement",
+                "description": "The child practiced placing blocks to make a recognizable entrance or section.",
+                "color": "blue"
+            }
+        ])
+
+    if category == "multi_level":
+        cards.extend([
+            {
+                "title": "Layered Building",
+                "description": "The child explored how one level can be placed above another.",
+                "color": "cream"
+            },
+            {
+                "title": "Vertical Planning",
+                "description": "The build shows thinking about how lower parts support upper floors or sections.",
+                "color": "green"
+            },
+            {
+                "title": "Structure Organization",
+                "description": "The child practiced arranging the build into different levels instead of one simple stack.",
+                "color": "blue"
+            }
+        ])
 
     if has_keyword(evidence, ["stack", "stacked", "tall", "vertical", "height", "tower"]):
         cards.append({
@@ -495,6 +718,13 @@ def build_learning_cards_from_evidence(category, visible_elements):
             "color": "cream"
         })
 
+    if category == "scene":
+        cards.append({
+            "title": "Story Building",
+            "description": "The child used blocks to create a small pretend-play setup.",
+            "color": "cream"
+        })
+
     if category in ["abstract", "unclear"]:
         cards.append({
             "title": "Spatial Thinking",
@@ -567,7 +797,6 @@ def is_too_generic_card(card):
     if not title or not description:
         return True
 
-    # Very short descriptions usually feel repeated/generic.
     if len(description.split()) < 8:
         return True
 
@@ -580,11 +809,11 @@ def is_too_generic_card(card):
         "motor skills"
     ]
 
-    # Allow these only if the description has real visible evidence.
     evidence_words = [
         "stack", "base", "support", "gap", "bridge", "roof", "triangle",
         "curve", "arch", "repeated", "horizontal", "vertical", "blocks",
-        "pieces", "path", "opening"
+        "pieces", "path", "opening", "floor", "level", "wheel", "house",
+        "vehicle", "room", "platform"
     ]
 
     if title in weak_titles:
@@ -594,10 +823,6 @@ def is_too_generic_card(card):
 
 
 def choose_learning_cards(ai_cards, category, visible_elements):
-    """
-    Prefer Groq's unique cards.
-    Use backend fallback only when Groq is empty or too generic.
-    """
     backend_cards = build_learning_cards_from_evidence(category, visible_elements)
 
     if not isinstance(ai_cards, list) or len(ai_cards) < 3:
@@ -627,13 +852,10 @@ def choose_learning_cards(ai_cards, category, visible_elements):
         }
 
         if is_too_generic_card(temp_card):
-            # Do not immediately reject all AI cards.
-            # Just skip weak cards and keep useful ones.
             continue
 
         cleaned.append(temp_card)
 
-    # If Groq gave at least 2 good cards, keep them and fill the rest with backend cards.
     if len(cleaned) >= 2:
         existing_titles = {card["title"].lower() for card in cleaned}
 
@@ -717,27 +939,41 @@ Child age:
 
 TROY BLOCK CONTEXT:
 - Troy builds are made using wooden blocks.
-- Pieces may include cubes, cuboids, long beams, planks, pillars, triangular roof pieces, curved/arch pieces, and connector-like wooden pieces.
-- Children may build towers, bridges, houses, animals, vehicles, gates, castles, roads, pretend scenes, or abstract structures.
+- Pieces may include cubes, cuboids, long beams, planks, pillars, triangular roof pieces, curved/arch pieces, connector-like pieces, and wheel-like/base pieces if visible.
+- Children may build towers, bridges, houses, animals, vehicles, gates, castles, roads, pretend scenes, hybrid builds, or abstract structures.
 
 MOST IMPORTANT RULE:
-Do not guess the child's intention randomly.
-Only identify the build as a specific object if the visible structure strongly supports it.
+Be strict, but creative.
+Do not guess randomly.
+Only make a creative guess when the visible structure supports it.
 
-GUESSING RULES:
-- If it has stacked vertical pieces and height: call it a tower-like structure.
+CREATIVE HYBRID GUESSING RULES:
+- If the build has vehicle-like parts plus house-like parts, call it a house-on-wheels, mobile-home, camper, or moving-house style build.
+- If the build has floors, platforms, layers, or sections above each other, call it a multi-level structure, not a tower.
+- If the build has house-like parts across more than one level, call it a multi-level house-like build.
+- If the build has bridge-like supports plus a room/roof section, call it a bridge-house or raised-house style build.
+- If the build has a gate/opening plus castle-like walls or sections, call it a castle-gate style build.
+- If multiple object ideas are visible, explain the combination instead of reducing it to just "tower".
+- Do not invent wheels, roof, floors, animals, or doors unless they are visible.
+
+NORMAL GUESSING RULES:
+- If it is mainly one narrow vertical stack or column: call it a tower-like structure.
 - If it has two supports with a horizontal piece across: call it a bridge-like structure.
 - If it has walls, roof/triangle pieces, or room-like layout: call it a house-like structure.
 - If it has wheels, axle-like parts, or clear vehicle shape: call it a vehicle-like structure.
 - If it has body + legs/head/neck shape: call it an animal-like structure.
 - If it has an entrance/opening/arch: call it a gate-like structure.
 - If it is not clear, call it an abstract or open-ended block structure.
-- Never confidently say car, dog, castle, or house unless there is strong visible evidence.
 - Use cautious language like "looks like", "seems like", or "could be" when uncertain.
 
 VISIBLE EVIDENCE RULES:
 Every sentence must be based on visible details in the image.
 Mention actual visible details such as:
+- floors
+- levels
+- platforms
+- layered sections
+- upper and lower parts
 - tall stack
 - wide base
 - repeated blocks
@@ -749,6 +985,9 @@ Mention actual visible details such as:
 - gaps
 - loose blocks
 - connected sections
+- wheel-like parts
+- house-like top
+- vehicle-like base
 
 UNIQUENESS RULE:
 This analysis must feel different for each uploaded build.
@@ -774,6 +1013,8 @@ Good learning card examples:
 - If repeated blocks are used: "Pattern Recognition"
 - If there are gaps/bridges: "Support and Span"
 - If different shapes are combined: "Shape Matching"
+- If the build has multiple levels: "Layered Building"
+- If the build combines a vehicle and a house: "Combining Ideas"
 - If the build is pretend/abstract: "Imagination and Storytelling"
 - If the child used many pieces carefully: "Fine Motor Control"
 
@@ -798,7 +1039,7 @@ Return exactly this JSON shape:
   "imageStatus": "valid or invalid",
   "confidenceScore": 0,
   "analysisDetails": {{
-    "buildCategory": "tower / bridge / house / vehicle / animal / gate / castle / road / abstract / unclear / unrelated",
+    "buildCategory": "house_vehicle / multi_level_house / bridge_house / castle_gate / multi_level / tower / bridge / house / vehicle / animal / gate / castle / road / scene / abstract / unclear / unrelated",
     "visibleElements": [
       "specific visible detail 1",
       "specific visible detail 2",
@@ -808,7 +1049,7 @@ Return exactly this JSON shape:
     "whyThisGuess": "explain the guess using only visible details"
   }},
   "buildGuess": {{
-    "title": "safe build interpretation",
+    "title": "safe but creative build interpretation",
     "subtitle": "one short sentence explaining what it looks like"
   }},
   "whatWeFound": {{
@@ -887,9 +1128,9 @@ def call_groq_vision(client, image_data_url, age):
                 ]
             }
         ],
-        temperature=0.55,
+        temperature=0.65,
         top_p=0.95,
-        max_completion_tokens=1400,
+        max_completion_tokens=1600,
         response_format={
             "type": "json_object"
         }
