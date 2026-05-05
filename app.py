@@ -1,17 +1,18 @@
 import os
 import json
 import uuid
-import time
 import base64
 import hashlib
 from io import BytesIO
 from pathlib import Path
+from collections import OrderedDict
 
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from PIL import Image, ImageOps
 from dotenv import load_dotenv
 from werkzeug.utils import secure_filename
+from werkzeug.exceptions import RequestEntityTooLarge
 
 import google.generativeai as genai
 from groq import Groq
@@ -22,21 +23,28 @@ from groq import Groq
 # =========================================================
 
 BASE_DIR = Path(__file__).resolve().parent
-UPLOAD_FOLDER = BASE_DIR / "uploads"
-UPLOAD_FOLDER.mkdir(exist_ok=True)
-
 load_dotenv(BASE_DIR / ".env")
 
 app = Flask(__name__)
+
+# IMPORTANT: prevents huge images from killing Render memory
+app.config["MAX_CONTENT_LENGTH"] = 4 * 1024 * 1024  # 4 MB upload limit
 
 CORS_ORIGINS = os.environ.get("CORS_ORIGINS", "*")
 CORS(app, origins=CORS_ORIGINS.split(","))
 
 ALLOWED_EXTENSIONS = {"png", "jpg", "jpeg", "webp"}
-MAX_BASE64_IMAGE_SIZE = 3_800_000
 
-# In-memory cache (same image + same age => reuse old result)
-analysis_cache = {}
+# Keep this low to avoid Render out-of-memory
+MAX_BASE64_IMAGE_SIZE = 1_800_000
+
+# Avoid PIL decompression bomb memory issues
+Image.MAX_IMAGE_PIXELS = 15_000_000
+
+# Limited in-memory cache
+analysis_cache = OrderedDict()
+MAX_CACHE_ITEMS = 30
+
 sessions = {}
 
 
@@ -70,39 +78,48 @@ def get_groq_text_model():
     ).strip()
 
 
-def build_groq_client():
-    key = get_groq_api_key()
-
-    if not key:
-        return None
-
-    return Groq(api_key=key)
-
-
 def build_gemini_model():
-    key = get_gemini_api_key()
+    api_key = get_gemini_api_key()
 
-    if not key:
+    if not api_key:
         return None
 
-    genai.configure(api_key=key)
+    genai.configure(api_key=api_key)
 
-    model = genai.GenerativeModel(
+    return genai.GenerativeModel(
         get_gemini_model(),
         generation_config={
-            "temperature": 0.6,
+            "temperature": 0.55,
             "top_p": 0.95,
-            "max_output_tokens": 1600
+            "max_output_tokens": 1300
         }
     )
 
-    return model
+
+def build_groq_client():
+    api_key = get_groq_api_key()
+
+    if not api_key:
+        return None
+
+    return Groq(api_key=api_key)
 
 
 print("Gemini key:", "FOUND" if get_gemini_api_key() else "NOT FOUND")
 print("Gemini model:", get_gemini_model())
 print("Groq key:", "FOUND" if get_groq_api_key() else "NOT FOUND")
 print("Groq vision model:", get_groq_vision_model())
+
+
+# =========================================================
+# Error handlers
+# =========================================================
+
+@app.errorhandler(RequestEntityTooLarge)
+def handle_large_file(error):
+    return jsonify({
+        "error": "Image is too large. Please upload an image below 4 MB."
+    }), 413
 
 
 # =========================================================
@@ -150,7 +167,11 @@ def ensure_list(value, fallback=None, limit=3):
 
 def safe_get_dict(data, key):
     value = data.get(key)
-    return value if isinstance(value, dict) else {}
+
+    if isinstance(value, dict):
+        return value
+
+    return {}
 
 
 def extract_json_block(text):
@@ -161,6 +182,7 @@ def extract_json_block(text):
 
     if text.startswith("```"):
         lines = text.splitlines()
+
         if len(lines) >= 3:
             text = "\n".join(lines[1:-1]).strip()
 
@@ -180,6 +202,7 @@ def parse_json_response(text):
 
 def is_rate_limit_error(error_text):
     lower = error_text.lower()
+
     return (
         "429" in lower
         or "rate limit" in lower
@@ -191,6 +214,7 @@ def is_rate_limit_error(error_text):
 
 def is_invalid_key_error(error_text):
     lower = error_text.lower()
+
     return (
         "401" in lower
         or "403" in lower
@@ -203,6 +227,7 @@ def is_invalid_key_error(error_text):
 
 def is_temporary_error(error_text):
     lower = error_text.lower()
+
     return (
         "500" in lower
         or "502" in lower
@@ -213,7 +238,7 @@ def is_temporary_error(error_text):
 
 
 # =========================================================
-# Image helpers
+# Image processing helpers
 # =========================================================
 
 def encode_image_to_base64_jpeg(img, quality):
@@ -226,49 +251,62 @@ def encode_image_to_base64_jpeg(img, quality):
 
 def prepare_image_for_models(image_file):
     """
-    Returns:
-    - PIL image for Gemini
-    - data URL for Groq
-    - image hash for caching
+    Converts upload into:
+    1. Small PIL image for Gemini
+    2. Small base64 data URL for Groq
+    3. SHA hash for cache
+
+    This is memory-safe for Render free tier.
     """
+
     img = Image.open(image_file.stream)
     img = ImageOps.exif_transpose(img)
 
     if img.mode != "RGB":
         img = img.convert("RGB")
 
-    img.thumbnail((1400, 1400))
+    # Memory-safe resize
+    img.thumbnail((900, 900))
 
-    for quality in [85, 75, 65, 55, 45]:
+    for quality in [80, 70, 60, 50, 40]:
         raw_bytes, encoded = encode_image_to_base64_jpeg(img, quality)
 
         if len(encoded.encode("utf-8")) <= MAX_BASE64_IMAGE_SIZE:
             pil_img = Image.open(BytesIO(raw_bytes))
+            pil_img.load()
             pil_img = pil_img.convert("RGB")
+
             image_hash = hashlib.sha256(raw_bytes).hexdigest()
             data_url = f"data:image/jpeg;base64,{encoded}"
+
             return pil_img, data_url, image_hash
 
-    img.thumbnail((1000, 1000))
+    # More aggressive compression
+    img.thumbnail((700, 700))
 
-    for quality in [70, 60, 50, 40]:
+    for quality in [60, 50, 40, 35]:
         raw_bytes, encoded = encode_image_to_base64_jpeg(img, quality)
 
         if len(encoded.encode("utf-8")) <= MAX_BASE64_IMAGE_SIZE:
             pil_img = Image.open(BytesIO(raw_bytes))
+            pil_img.load()
             pil_img = pil_img.convert("RGB")
+
             image_hash = hashlib.sha256(raw_bytes).hexdigest()
             data_url = f"data:image/jpeg;base64,{encoded}"
+
             return pil_img, data_url, image_hash
 
-    raise ValueError("Image is too large even after compression. Please upload a smaller image.")
+    raise ValueError(
+        "Image is too large even after compression. Please upload a smaller image."
+    )
 
 
 # =========================================================
 # Prompt
 # =========================================================
 
-def build_simple_troy_prompt(age):
+def build_troy_prompt(age):
     return f"""
 You are Troy AI Analyzer.
 
@@ -280,36 +318,20 @@ Child age:
 Goal:
 Give feedback similar to how a careful human teacher would look at the photo.
 
-Important:
+Important rules:
 - Look at the whole image first.
 - Give a creative but realistic guess about what the child may have built.
 - Do not force labels like tower, house, bridge, or car.
 - If it looks like a hybrid idea, describe the hybrid naturally.
   Examples:
-  - moving house
-  - house-on-wheels
-  - bridge-house
-  - layered building
-  - castle gate
-  - pretend-play scene
-  - animal-like vehicle
-  - abstract machine
+  moving house, house-on-wheels, bridge-house, layered building,
+  castle gate, pretend-play scene, animal-like vehicle, abstract machine.
 - If it has floors or sections going upward, do not automatically call it a tower.
   It may be a multi-level building, layered structure, raised house, or pretend-play scene.
 - Base every statement only on visible details.
-- Mention visible parts such as:
-  - base
-  - floors
-  - levels
-  - gaps
-  - supports
-  - repeated blocks
-  - stacked sections
-  - roof-like pieces
-  - wheel-like parts
-  - curved pieces
-  - openings
-  - loose blocks
+- Mention visible parts such as base, floors, levels, gaps, supports,
+  repeated blocks, stacked sections, roof-like pieces, wheel-like parts,
+  curved pieces, openings, or loose blocks if visible.
 - If the image is not a Troy/block build, mark it invalid.
 - If you are unsure, use cautious phrases like "looks like", "could be", or "seems to".
 - Keep the tone simple, warm, and parent-friendly.
@@ -372,7 +394,7 @@ Rules for invalid image:
 
 
 # =========================================================
-# Response cleanup
+# Response normalization
 # =========================================================
 
 def normalize_learning_cards(cards):
@@ -421,6 +443,7 @@ def normalize_learning_cards(cards):
     for item in fallback:
         if len(cleaned) >= 3:
             break
+
         cleaned.append(item)
 
     for i, card in enumerate(cleaned[:3]):
@@ -512,11 +535,15 @@ def analyze_with_gemini(pil_img, age):
     if not model:
         raise RuntimeError("GEMINI_API_KEY not found")
 
-    prompt = build_simple_troy_prompt(age)
+    prompt = build_troy_prompt(age)
 
     response = model.generate_content([prompt, pil_img])
 
     text = getattr(response, "text", "")
+
+    if not text:
+        raise RuntimeError("Gemini returned empty response")
+
     return parse_json_response(text)
 
 
@@ -530,7 +557,7 @@ def analyze_with_groq(image_data_url, age):
     if not client:
         raise RuntimeError("GROQ_API_KEY not found")
 
-    prompt = build_simple_troy_prompt(age)
+    prompt = build_troy_prompt(age)
 
     completion = client.chat.completions.create(
         model=get_groq_vision_model(),
@@ -557,24 +584,27 @@ def analyze_with_groq(image_data_url, age):
         ],
         temperature=0.65,
         top_p=0.95,
-        max_completion_tokens=1600,
+        max_completion_tokens=1300,
         response_format={
             "type": "json_object"
         }
     )
 
     text = completion.choices[0].message.content
+
+    if not text:
+        raise RuntimeError("Groq returned empty response")
+
     return parse_json_response(text)
 
 
 # =========================================================
-# Main analysis with fallback
+# Main fallback logic
 # =========================================================
 
 def analyze_image_with_fallback(pil_img, image_data_url, age):
     errors = []
 
-    # Gemini first
     try:
         parsed = analyze_with_gemini(pil_img, age)
         result = normalize_analysis_response(parsed)
@@ -586,7 +616,6 @@ def analyze_image_with_fallback(pil_img, image_data_url, age):
         print("Gemini failed:", error_text)
         errors.append(f"Gemini: {error_text}")
 
-    # Groq fallback
     try:
         parsed = analyze_with_groq(image_data_url, age)
         result = normalize_analysis_response(parsed)
@@ -599,6 +628,14 @@ def analyze_image_with_fallback(pil_img, image_data_url, age):
         errors.append(f"Groq: {error_text}")
 
     raise RuntimeError("Both Gemini and Groq failed. " + " | ".join(errors))
+
+
+def save_cache(cache_key, result):
+    analysis_cache[cache_key] = result
+    analysis_cache.move_to_end(cache_key)
+
+    if len(analysis_cache) > MAX_CACHE_ITEMS:
+        analysis_cache.popitem(last=False)
 
 
 # =========================================================
@@ -657,6 +694,7 @@ def analyze():
         if cache_key in analysis_cache:
             cached = analysis_cache[cache_key].copy()
             cached["cached"] = True
+            analysis_cache.move_to_end(cache_key)
             return jsonify(cached), 200
 
         result = analyze_image_with_fallback(pil_img, image_data_url, age)
@@ -670,8 +708,13 @@ def analyze():
                 "groq_model": get_groq_vision_model()
             }
 
-        analysis_cache[cache_key] = result
+        save_cache(cache_key, result)
         sessions[result["session_id"]] = result
+
+        # Keep session memory small too
+        if len(sessions) > 50:
+            oldest_key = next(iter(sessions))
+            sessions.pop(oldest_key, None)
 
         return jsonify(result), 200
 
@@ -747,7 +790,7 @@ Keep it to 3 to 5 short lines.
             ],
             temperature=0.45,
             top_p=0.9,
-            max_completion_tokens=350
+            max_completion_tokens=300
         )
 
         answer = completion.choices[0].message.content
@@ -761,6 +804,7 @@ Keep it to 3 to 5 short lines.
 
     except Exception as e:
         print("Ask error:", str(e))
+
         return jsonify({
             "answer": "Live Q&A is temporarily unavailable right now. Please try again later."
         }), 200
