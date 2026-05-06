@@ -1,22 +1,22 @@
 import os
 import json
 import uuid
+import time
 import base64
 import hashlib
 import random
 from io import BytesIO
 from pathlib import Path
 from collections import OrderedDict
+from datetime import datetime
 
+import requests
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from PIL import Image, ImageOps
 from dotenv import load_dotenv
 from werkzeug.utils import secure_filename
 from werkzeug.exceptions import RequestEntityTooLarge
-
-import google.generativeai as genai
-from groq import Groq
 
 
 # =========================================================
@@ -28,21 +28,32 @@ load_dotenv(BASE_DIR / ".env")
 
 app = Flask(__name__)
 
-# Prevent huge uploads from killing Render memory
-app.config["MAX_CONTENT_LENGTH"] = 4 * 1024 * 1024  # 4 MB
+# Public-safe upload limit for Render
+app.config["MAX_CONTENT_LENGTH"] = 2 * 1024 * 1024  # 2 MB
 
 CORS_ORIGINS = os.environ.get("CORS_ORIGINS", "*")
 CORS(app, origins=CORS_ORIGINS.split(","))
 
 ALLOWED_EXTENSIONS = {"png", "jpg", "jpeg", "webp"}
 
-MAX_BASE64_IMAGE_SIZE = 1_800_000
-Image.MAX_IMAGE_PIXELS = 15_000_000
+# Render-safe image limits
+MAX_BASE64_IMAGE_SIZE = 900_000
+Image.MAX_IMAGE_PIXELS = 10_000_000
 
+# Cache repeated uploads
 analysis_cache = OrderedDict()
-MAX_CACHE_ITEMS = 30
+MAX_CACHE_ITEMS = 12
 
 sessions = {}
+
+# Simple public rate limiter
+ip_usage = {}
+UPLOAD_LIMIT_PER_IP_PER_DAY = int(os.environ.get("UPLOAD_LIMIT_PER_IP_PER_DAY", "25"))
+UPLOAD_COOLDOWN_SECONDS = int(os.environ.get("UPLOAD_COOLDOWN_SECONDS", "10"))
+
+# If Gemini hits quota, skip Gemini temporarily and use Groq directly
+gemini_disabled_until = 0
+GEMINI_COOLDOWN_SECONDS = int(os.environ.get("GEMINI_COOLDOWN_SECONDS", "7200"))
 
 
 # =========================================================
@@ -61,7 +72,7 @@ TROY_PATTERN_LIBRARY = [
             "small cylinders below the seat",
             "two curved rails touching the ground"
         ],
-        "description": "A chair with a seat, backrest, and curved rocker rails at the bottom."
+        "description": "A chair-like build with a seat, backrest, and curved rocker rails."
     },
     {
         "id": "earthquake_resistant",
@@ -70,11 +81,11 @@ TROY_PATTERN_LIBRARY = [
         "visual_cues": [
             "multi-floor building",
             "rectangular levels",
-            "small top tower or roof piece",
-            "curved rocker-like base pieces",
-            "building sitting on movable supports"
+            "small top roof piece",
+            "curved rocker-like base",
+            "building on movable supports"
         ],
-        "description": "A multi-level building placed on rocker-like supports."
+        "description": "A multi-level building placed on rocker-like or movable supports."
     },
     {
         "id": "troy_pendulum",
@@ -82,12 +93,12 @@ TROY_PATTERN_LIBRARY = [
         "category": "motion_structures",
         "visual_cues": [
             "two vertical supports",
-            "horizontal beam across the top",
+            "horizontal beam",
             "curved pieces below",
             "triangle piece on top",
             "balanced pendulum-like setup"
         ],
-        "description": "A pendulum-style structure with supports, a top beam, curved parts, and a central triangular piece."
+        "description": "A pendulum-style structure with supports, top beam, and curved parts."
     },
     {
         "id": "newtons_pet",
@@ -95,12 +106,12 @@ TROY_PATTERN_LIBRARY = [
         "category": "motion_structures",
         "visual_cues": [
             "low vehicle-like base",
-            "long rectangular block on top",
+            "long rectangular top",
             "cylinders underneath",
-            "curved pieces at the bottom",
-            "animal or pet-like moving form"
+            "curved bottom pieces",
+            "pet-like moving form"
         ],
-        "description": "A low rolling pet-like build using cylinders and curved base pieces."
+        "description": "A low rolling pet-like structure using cylinders and curved pieces."
     },
     {
         "id": "charminar",
@@ -109,11 +120,11 @@ TROY_PATTERN_LIBRARY = [
         "visual_cues": [
             "square monument base",
             "four corner towers",
-            "four pillars or minarets",
+            "four minarets",
             "central opening",
-            "symmetrical monument layout"
+            "symmetrical layout"
         ],
-        "description": "A monument-like build with four corner pillars or minarets and a central structure."
+        "description": "A monument-like structure with four corner pillars and a central area."
     },
     {
         "id": "qutub_minar",
@@ -123,10 +134,10 @@ TROY_PATTERN_LIBRARY = [
             "very tall narrow tower",
             "stacked vertical blocks",
             "wide base",
-            "tapering tower shape",
-            "monument tower form"
+            "tapering tower",
+            "monument tower"
         ],
-        "description": "A tall tapering tower structure with stacked blocks and a wider base."
+        "description": "A tall tapering tower with a wider bottom and narrow upper part."
     },
     {
         "id": "shinto_arch",
@@ -136,10 +147,10 @@ TROY_PATTERN_LIBRARY = [
             "two tall pillars",
             "horizontal beam across top",
             "gate-like structure",
-            "angled blocks near the top",
-            "open space below the beam"
+            "open space below",
+            "angled top blocks"
         ],
-        "description": "A gate or arch structure with two vertical supports and a strong horizontal top beam."
+        "description": "A gate or arch-like structure with two supports and a strong top beam."
     },
     {
         "id": "pickup_truck",
@@ -147,12 +158,12 @@ TROY_PATTERN_LIBRARY = [
         "category": "vehicles",
         "visual_cues": [
             "vehicle-like shape",
-            "four cylinder wheels",
+            "cylinder wheels",
             "flat truck bed",
-            "raised cabin or block section",
+            "raised cabin",
             "long rectangular base"
         ],
-        "description": "A pickup truck build with a long base, raised cabin or bed, and cylinder wheels."
+        "description": "A pickup truck-like build with a long base, raised section, and wheels."
     },
     {
         "id": "highway",
@@ -165,7 +176,7 @@ TROY_PATTERN_LIBRARY = [
             "extended roadway",
             "sign-like vertical blocks"
         ],
-        "description": "A long highway or roadway scene with ramps, supports, and road sections."
+        "description": "A long road or highway scene with ramps, supports, and roadway sections."
     },
     {
         "id": "india_gate",
@@ -176,9 +187,9 @@ TROY_PATTERN_LIBRARY = [
             "two tall side pillars",
             "rectangular gateway",
             "stepped top",
-            "monument gate shape"
+            "monument gate"
         ],
-        "description": "A large monument-style gateway with a central arch and tall side supports."
+        "description": "A monument-style gateway with a central arch and side supports."
     },
     {
         "id": "golden_gate_bridge",
@@ -191,7 +202,7 @@ TROY_PATTERN_LIBRARY = [
             "repeated supports",
             "bridge-like span"
         ],
-        "description": "A long bridge structure with tower-like frames and a stretched road section."
+        "description": "A bridge-like build with tower frames and a long connecting road section."
     },
     {
         "id": "eiffel_tower",
@@ -204,7 +215,7 @@ TROY_PATTERN_LIBRARY = [
             "wide bottom supports",
             "tapering tower"
         ],
-        "description": "A tall Eiffel Tower-like structure with angled supports and a narrow upper section."
+        "description": "A tall tower with angled supports and a narrow upper section."
     },
     {
         "id": "mosque",
@@ -214,10 +225,10 @@ TROY_PATTERN_LIBRARY = [
             "dome-like curved piece",
             "arched entrance",
             "sloped ramp",
-            "small towers or minarets",
+            "small minarets",
             "religious building form"
         ],
-        "description": "A mosque-style structure with an arch, dome-like curved piece, and entrance."
+        "description": "A mosque-style structure with an arch, dome-like feature, and entrance."
     },
     {
         "id": "gurudwara",
@@ -227,10 +238,10 @@ TROY_PATTERN_LIBRARY = [
             "dome-like top",
             "arched opening",
             "tall side pillars",
-            "sloped path or ramp",
+            "sloped path",
             "place of worship structure"
         ],
-        "description": "A Gurudwara-style place of worship with an arched body, dome-like feature, and tall side elements."
+        "description": "A Gurudwara-like place of worship with arch, dome-like feature, and side elements."
     },
     {
         "id": "greek_temple",
@@ -243,7 +254,7 @@ TROY_PATTERN_LIBRARY = [
             "stair-like front",
             "classical temple shape"
         ],
-        "description": "A Greek temple-like structure with columns, a roof, and a front platform or stairs."
+        "description": "A temple-like build with columns, roof, and front platform."
     },
     {
         "id": "taj_mahal",
@@ -269,7 +280,7 @@ TROY_PATTERN_LIBRARY = [
             "curved roof pieces",
             "engine-like front"
         ],
-        "description": "A train build with a long body, chimney cylinder, and wagon-like sections."
+        "description": "A train-like build with a long body, chimney, and wagon-like sections."
     },
     {
         "id": "ship",
@@ -282,20 +293,20 @@ TROY_PATTERN_LIBRARY = [
             "pointed or sloped front",
             "ship-like body"
         ],
-        "description": "A ship or boat-like build with a long hull, cabin, and cylinder chimney."
+        "description": "A ship-like build with a long hull, cabin, and chimney."
     },
     {
         "id": "temple",
         "name": "Temple",
         "category": "places_of_worship",
         "visual_cues": [
-            "stair or ramp front",
+            "front ramp",
             "pillars",
             "roof structure",
             "temple-like body",
             "raised entrance"
         ],
-        "description": "A temple-like build with a front ramp or stairs, pillars, and a roofed structure."
+        "description": "A temple-like structure with a front ramp, pillars, and roofed body."
     }
 ]
 
@@ -303,7 +314,7 @@ BOOK_MATCH_THRESHOLD = 78
 
 
 # =========================================================
-# API config
+# Environment config
 # =========================================================
 
 def get_gemini_api_key():
@@ -332,37 +343,15 @@ def get_groq_text_model():
     ).strip()
 
 
-def build_gemini_model():
-    api_key = get_gemini_api_key()
-
-    if not api_key:
-        return None
-
-    genai.configure(api_key=api_key)
-
-    return genai.GenerativeModel(
-        get_gemini_model(),
-        generation_config={
-            "temperature": 0.72,
-            "top_p": 0.95,
-            "max_output_tokens": 1600
-        }
-    )
-
-
-def build_groq_client():
-    api_key = get_groq_api_key()
-
-    if not api_key:
-        return None
-
-    return Groq(api_key=api_key)
+def get_provider_order():
+    return os.environ.get("PROVIDER_ORDER", "gemini_then_groq").strip().lower()
 
 
 print("Gemini key:", "FOUND" if get_gemini_api_key() else "NOT FOUND")
 print("Gemini model:", get_gemini_model())
 print("Groq key:", "FOUND" if get_groq_api_key() else "NOT FOUND")
 print("Groq vision model:", get_groq_vision_model())
+print("Provider order:", get_provider_order())
 
 
 # =========================================================
@@ -372,7 +361,7 @@ print("Groq vision model:", get_groq_vision_model())
 @app.errorhandler(RequestEntityTooLarge)
 def handle_large_file(error):
     return jsonify({
-        "error": "Image is too large. Please upload an image below 4 MB."
+        "error": "Image is too large. Please upload an image below 2 MB."
     }), 413
 
 
@@ -432,7 +421,6 @@ def extract_json_block(text):
 
     if text.startswith("```"):
         lines = text.splitlines()
-
         if len(lines) >= 3:
             text = "\n".join(lines[1:-1]).strip()
 
@@ -452,7 +440,6 @@ def parse_json_response(text):
 
 def is_rate_limit_error(error_text):
     lower = error_text.lower()
-
     return (
         "429" in lower
         or "rate limit" in lower
@@ -464,7 +451,6 @@ def is_rate_limit_error(error_text):
 
 def is_invalid_key_error(error_text):
     lower = error_text.lower()
-
     return (
         "401" in lower
         or "403" in lower
@@ -477,14 +463,49 @@ def is_invalid_key_error(error_text):
 
 def is_temporary_error(error_text):
     lower = error_text.lower()
-
     return (
         "500" in lower
         or "502" in lower
         or "503" in lower
         or "service unavailable" in lower
         or "temporarily unavailable" in lower
+        or "timeout" in lower
     )
+
+
+def get_client_ip():
+    forwarded = request.headers.get("X-Forwarded-For", "")
+    if forwarded:
+        return forwarded.split(",")[0].strip()
+    return request.remote_addr or "unknown"
+
+
+def check_rate_limit():
+    ip = get_client_ip()
+    today = datetime.utcnow().strftime("%Y-%m-%d")
+    now = time.time()
+
+    record = ip_usage.get(ip)
+
+    if not record or record.get("day") != today:
+        ip_usage[ip] = {
+            "day": today,
+            "count": 0,
+            "last_upload": 0
+        }
+        record = ip_usage[ip]
+
+    if now - record["last_upload"] < UPLOAD_COOLDOWN_SECONDS:
+        wait = int(UPLOAD_COOLDOWN_SECONDS - (now - record["last_upload"]))
+        return False, f"Please wait {wait} seconds before uploading another image."
+
+    if record["count"] >= UPLOAD_LIMIT_PER_IP_PER_DAY:
+        return False, "Daily free upload limit reached for this user. Please try again tomorrow."
+
+    record["count"] += 1
+    record["last_upload"] = now
+
+    return True, ""
 
 
 # =========================================================
@@ -506,41 +527,31 @@ def prepare_image_for_models(image_file):
     if img.mode != "RGB":
         img = img.convert("RGB")
 
-    img.thumbnail((900, 900))
+    img.thumbnail((650, 650))
 
-    for quality in [80, 70, 60, 50, 40]:
+    for quality in [75, 65, 55, 45, 35]:
         raw_bytes, encoded = encode_image_to_base64_jpeg(img, quality)
 
         if len(encoded.encode("utf-8")) <= MAX_BASE64_IMAGE_SIZE:
-            pil_img = Image.open(BytesIO(raw_bytes))
-            pil_img.load()
-            pil_img = pil_img.convert("RGB")
-
             image_hash = hashlib.sha256(raw_bytes).hexdigest()
             data_url = f"data:image/jpeg;base64,{encoded}"
+            return encoded, data_url, image_hash
 
-            return pil_img, data_url, image_hash
+    img.thumbnail((500, 500))
 
-    img.thumbnail((700, 700))
-
-    for quality in [60, 50, 40, 35]:
+    for quality in [55, 45, 35, 30]:
         raw_bytes, encoded = encode_image_to_base64_jpeg(img, quality)
 
         if len(encoded.encode("utf-8")) <= MAX_BASE64_IMAGE_SIZE:
-            pil_img = Image.open(BytesIO(raw_bytes))
-            pil_img.load()
-            pil_img = pil_img.convert("RGB")
-
             image_hash = hashlib.sha256(raw_bytes).hexdigest()
             data_url = f"data:image/jpeg;base64,{encoded}"
-
-            return pil_img, data_url, image_hash
+            return encoded, data_url, image_hash
 
     raise ValueError("Image is too large even after compression. Please upload a smaller image.")
 
 
 # =========================================================
-# Feedback variation
+# Prompt
 # =========================================================
 
 def pick_feedback_style(image_hash):
@@ -592,10 +603,6 @@ def build_unique_hint(image_hash):
     return hints[seed_number % len(hints)]
 
 
-# =========================================================
-# Prompt builders
-# =========================================================
-
 def compact_pattern_library_text():
     lines = []
 
@@ -622,7 +629,7 @@ You are analyzing one uploaded image of a child's Troy wooden-block build.
 Child age:
 {age if age else "unknown"}
 
-You have a Troy pattern book reference list.
+You have a Troy pattern reference list.
 
 Your job has TWO MODES:
 
@@ -638,7 +645,7 @@ Known Troy patterns:
 {pattern_library}
 
 Important display rule:
-- Never mention page numbers in buildGuess, whatWeFound, whatTheyLearned, whatWeNoticed, suggestionsForParent, or nextBuildIdeas.
+- Never mention page numbers.
 - Do not say "page", "book page", or "from page".
 - If a known pattern matches, simply say it looks like the named pattern.
 - If no strong match exists, do normal creative analysis.
@@ -651,7 +658,6 @@ Pattern matching rules:
 - A random arch should not become India Gate unless it has a monument gateway form with side pillars and a central arch.
 - If similarity is weak or uncertain, use creative_guess.
 - If matchConfidence is below 78, use creative_guess.
-- If matchType is book_pattern, include pattern name and why it matches.
 - If matchType is creative_guess, matchedPattern must be null.
 
 Feedback style for this image:
@@ -747,12 +753,32 @@ Invalid image rules:
 
 
 # =========================================================
-# Specific fallback feedback logic
+# Feedback fallback helpers
 # =========================================================
 
 def contains_any(text, words):
     text = text.lower()
     return any(word in text for word in words)
+
+
+def remove_page_words(text):
+    text = clean_text(text)
+
+    for number in range(1, 31):
+        text = text.replace(f"page {number}", "the pattern reference")
+        text = text.replace(f"Page {number}", "the pattern reference")
+
+    replacements = {
+        "from page": "from the pattern reference",
+        "on page": "in the pattern reference",
+        "book page": "pattern reference",
+        "page number": "pattern reference"
+    }
+
+    for old, new in replacements.items():
+        text = text.replace(old, new)
+
+    return clean_text(text)
 
 
 def build_context_text(build_guess, summary, noticed, matched_pattern=None):
@@ -927,25 +953,6 @@ def creative_fallback_cards(build_guess, summary, noticed, image_hash, matched_p
             }
         ])
 
-    if contains_any(context, ["hybrid", "combines", "combination", "moving house", "house-on-wheels", "machine", "pretend", "scene"]):
-        card_pool.extend([
-            {
-                "title": "Idea Mixing",
-                "description": "The child combined more than one idea into a single build instead of making only one simple object.",
-                "color": "cream"
-            },
-            {
-                "title": "Pretend-World Design",
-                "description": "The build can become a small story world where different parts have different jobs.",
-                "color": "green"
-            },
-            {
-                "title": "Inventor Thinking",
-                "description": "The child experimented with making something unusual by joining different block ideas together.",
-                "color": "blue"
-            }
-        ])
-
     if matched_pattern and matched_pattern.get("name"):
         card_pool.append({
             "title": "Pattern Matching",
@@ -973,11 +980,6 @@ def creative_fallback_cards(build_guess, summary, noticed, image_hash, matched_p
             "title": "Above-Below Thinking",
             "description": "The child practiced noticing which parts are above, below, beside, or connected to other parts.",
             "color": "cream"
-        },
-        {
-            "title": "Small-World Making",
-            "description": "The build can become a tiny play world with places, paths, rooms, or moving parts.",
-            "color": "green"
         }
     ])
 
@@ -1091,7 +1093,9 @@ def normalize_matched_pattern(raw_matched_pattern, match_type):
         "name": pattern_name,
         "category": category or None,
         "matchConfidence": match_confidence,
-        "whyMatched": why_matched or "the visible structure matches the main shape and block arrangement"
+        "whyMatched": remove_page_words(
+            why_matched or "the visible structure matches the main shape and block arrangement"
+        )
     }
 
 
@@ -1105,7 +1109,7 @@ def normalize_learning_cards(cards, build_guess, summary, noticed, image_hash, m
                 continue
 
             title = clean_text(card.get("title"))
-            description = clean_text(card.get("description"))
+            description = remove_page_words(clean_text(card.get("description")))
             color = clean_text(card.get("color", allowed_colors[index % 3])).lower()
 
             if not title or not description:
@@ -1147,56 +1151,6 @@ def normalize_learning_cards(cards, build_guess, summary, noticed, image_hash, m
         card["color"] = allowed_colors[i]
 
     return cleaned[:3]
-
-
-def remove_page_words(text):
-    """
-    Extra safety: prevents page/book-page phrases from reaching frontend.
-    """
-    text = clean_text(text)
-
-    blocked_phrases = [
-        "from page",
-        "on page",
-        "book page",
-        "page number",
-        "page 1",
-        "page 2",
-        "page 3",
-        "page 4",
-        "page 5",
-        "page 6",
-        "page 7",
-        "page 8",
-        "page 9",
-        "page 10",
-        "page 11",
-        "page 12",
-        "page 13",
-        "page 14",
-        "page 15",
-        "page 16",
-        "page 17",
-        "page 18",
-        "page 19",
-        "page 20"
-    ]
-
-    lowered = text.lower()
-
-    if any(phrase in lowered for phrase in blocked_phrases):
-        text = (
-            text.replace("from page", "from the pattern reference")
-            .replace("on page", "in the pattern reference")
-            .replace("book page", "pattern reference")
-            .replace("page number", "pattern reference")
-        )
-
-        for number in range(1, 21):
-            text = text.replace(f"page {number}", "the pattern reference")
-            text = text.replace(f"Page {number}", "the pattern reference")
-
-    return clean_text(text)
 
 
 def normalize_analysis_response(parsed, image_hash):
@@ -1324,41 +1278,71 @@ def normalize_analysis_response(parsed, image_hash):
 
 
 # =========================================================
-# Gemini analysis
+# AI provider calls using lightweight REST
 # =========================================================
 
-def analyze_with_gemini(pil_img, age, image_hash):
-    model = build_gemini_model()
+def analyze_with_gemini_rest(image_base64, age, image_hash):
+    api_key = get_gemini_api_key()
 
-    if not model:
+    if not api_key:
         raise RuntimeError("GEMINI_API_KEY not found")
 
+    model = get_gemini_model()
     prompt = build_troy_prompt(age, image_hash)
-    response = model.generate_content([prompt, pil_img])
 
-    text = getattr(response, "text", "")
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
 
-    if not text:
-        raise RuntimeError("Gemini returned empty response")
+    payload = {
+        "contents": [
+            {
+                "parts": [
+                    {"text": prompt},
+                    {
+                        "inline_data": {
+                            "mime_type": "image/jpeg",
+                            "data": image_base64
+                        }
+                    }
+                ]
+            }
+        ],
+        "generationConfig": {
+            "temperature": 0.72,
+            "topP": 0.95,
+            "maxOutputTokens": 1600,
+            "responseMimeType": "application/json"
+        }
+    }
+
+    response = requests.post(url, json=payload, timeout=18)
+
+    if response.status_code >= 400:
+        raise RuntimeError(f"Gemini error {response.status_code}: {response.text[:800]}")
+
+    data = response.json()
+    text = data["candidates"][0]["content"]["parts"][0]["text"]
 
     return parse_json_response(text)
 
 
-# =========================================================
-# Groq fallback analysis
-# =========================================================
+def analyze_with_groq_rest(image_data_url, age, image_hash):
+    api_key = get_groq_api_key()
 
-def analyze_with_groq(image_data_url, age, image_hash):
-    client = build_groq_client()
-
-    if not client:
+    if not api_key:
         raise RuntimeError("GROQ_API_KEY not found")
 
     prompt = build_troy_prompt(age, image_hash)
 
-    completion = client.chat.completions.create(
-        model=get_groq_vision_model(),
-        messages=[
+    url = "https://api.groq.com/openai/v1/chat/completions"
+
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json"
+    }
+
+    payload = {
+        "model": get_groq_vision_model(),
+        "messages": [
             {
                 "role": "system",
                 "content": "You are a careful, creative visual analysis assistant. Return valid JSON only."
@@ -1379,18 +1363,21 @@ def analyze_with_groq(image_data_url, age, image_hash):
                 ]
             }
         ],
-        temperature=0.72,
-        top_p=0.95,
-        max_completion_tokens=1600,
-        response_format={
+        "temperature": 0.72,
+        "top_p": 0.95,
+        "max_completion_tokens": 1600,
+        "response_format": {
             "type": "json_object"
         }
-    )
+    }
 
-    text = completion.choices[0].message.content
+    response = requests.post(url, headers=headers, json=payload, timeout=55)
 
-    if not text:
-        raise RuntimeError("Groq returned empty response")
+    if response.status_code >= 400:
+        raise RuntimeError(f"Groq error {response.status_code}: {response.text[:800]}")
+
+    data = response.json()
+    text = data["choices"][0]["message"]["content"]
 
     return parse_json_response(text)
 
@@ -1399,36 +1386,59 @@ def analyze_with_groq(image_data_url, age, image_hash):
 # Main fallback logic
 # =========================================================
 
-def analyze_image_with_fallback(pil_img, image_data_url, age, image_hash):
+def should_try_gemini():
+    return bool(get_gemini_api_key()) and time.time() >= gemini_disabled_until
+
+
+def analyze_image_with_fallback(image_base64, image_data_url, age, image_hash):
+    global gemini_disabled_until
+
     errors = []
+    provider_order = get_provider_order()
 
-    try:
-        print("Trying Gemini first...")
-        parsed = analyze_with_gemini(pil_img, age, image_hash)
-        result = normalize_analysis_response(parsed, image_hash)
-        result["provider"] = "gemini"
-        print("Gemini analysis successful")
-        return result
+    if provider_order == "groq_first":
+        providers = ["groq", "gemini"]
+    else:
+        providers = ["gemini", "groq"]
 
-    except Exception as e:
-        error_text = str(e)
-        print("Gemini failed:", error_text)
-        errors.append(f"Gemini: {error_text}")
+    for provider in providers:
+        if provider == "gemini":
+            if not should_try_gemini():
+                print("Skipping Gemini because it is in cooldown or key is missing")
+                continue
 
-    try:
-        print("Trying Groq fallback...")
-        parsed = analyze_with_groq(image_data_url, age, image_hash)
-        result = normalize_analysis_response(parsed, image_hash)
-        result["provider"] = "groq"
-        print("Groq fallback successful")
-        return result
+            try:
+                print("Trying Gemini...")
+                parsed = analyze_with_gemini_rest(image_base64, age, image_hash)
+                result = normalize_analysis_response(parsed, image_hash)
+                result["provider"] = "gemini"
+                print("Gemini successful")
+                return result
 
-    except Exception as e:
-        error_text = str(e)
-        print("Groq failed:", error_text)
-        errors.append(f"Groq: {error_text}")
+            except Exception as e:
+                error_text = str(e)
+                print("Gemini failed:", error_text)
+                errors.append(f"Gemini: {error_text}")
 
-    raise RuntimeError("Both Gemini and Groq failed. " + " | ".join(errors))
+                if is_rate_limit_error(error_text):
+                    gemini_disabled_until = time.time() + GEMINI_COOLDOWN_SECONDS
+                    print(f"Gemini quota/rate limit hit. Cooldown for {GEMINI_COOLDOWN_SECONDS} seconds.")
+
+        if provider == "groq":
+            try:
+                print("Trying Groq...")
+                parsed = analyze_with_groq_rest(image_data_url, age, image_hash)
+                result = normalize_analysis_response(parsed, image_hash)
+                result["provider"] = "groq"
+                print("Groq successful")
+                return result
+
+            except Exception as e:
+                error_text = str(e)
+                print("Groq failed:", error_text)
+                errors.append(f"Groq: {error_text}")
+
+    raise RuntimeError("All AI providers failed. " + " | ".join(errors))
 
 
 def save_cache(cache_key, result):
@@ -1457,10 +1467,13 @@ def health():
         "status": "ok",
         "gemini_key_loaded": bool(get_gemini_api_key()),
         "gemini_model": get_gemini_model(),
+        "gemini_in_cooldown": time.time() < gemini_disabled_until,
         "groq_key_loaded": bool(get_groq_api_key()),
         "groq_vision_model": get_groq_vision_model(),
+        "provider_order": get_provider_order(),
         "pattern_count": len(TROY_PATTERN_LIBRARY),
-        "book_match_threshold": BOOK_MATCH_THRESHOLD
+        "book_match_threshold": BOOK_MATCH_THRESHOLD,
+        "cache_items": len(analysis_cache)
     })
 
 
@@ -1475,6 +1488,11 @@ def patterns():
 @app.route("/analyze", methods=["POST"])
 def analyze():
     try:
+        allowed, message = check_rate_limit()
+
+        if not allowed:
+            return jsonify({"error": message}), 429
+
         age = clean_text(request.form.get("age", ""))
 
         if "image" not in request.files:
@@ -1493,7 +1511,7 @@ def analyze():
         filename = secure_filename(image_file.filename)
 
         try:
-            pil_img, image_data_url, image_hash = prepare_image_for_models(image_file)
+            image_base64, image_data_url, image_hash = prepare_image_for_models(image_file)
         except Exception as e:
             return jsonify({
                 "error": "Could not process image.",
@@ -1508,7 +1526,7 @@ def analyze():
             analysis_cache.move_to_end(cache_key)
             return jsonify(cached), 200
 
-        result = analyze_image_with_fallback(pil_img, image_data_url, age, image_hash)
+        result = analyze_image_with_fallback(image_base64, image_data_url, age, image_hash)
         result["cached"] = False
 
         if os.environ.get("SHOW_DEBUG", "false").lower() == "true":
@@ -1524,7 +1542,7 @@ def analyze():
         save_cache(cache_key, result)
         sessions[result["session_id"]] = result
 
-        if len(sessions) > 50:
+        if len(sessions) > 30:
             oldest_key = next(iter(sessions))
             sessions.pop(oldest_key, None)
 
@@ -1536,7 +1554,7 @@ def analyze():
 
         if is_rate_limit_error(error_text):
             return jsonify({
-                "error": "AI usage limit reached right now. Please wait and try again."
+                "error": "AI free usage limit reached right now. Please wait and try again."
             }), 429
 
         if is_invalid_key_error(error_text):
@@ -1566,11 +1584,11 @@ def ask():
         if not question:
             return jsonify({"error": "Question is required"}), 400
 
-        client = build_groq_client()
+        api_key = get_groq_api_key()
 
-        if not client:
+        if not api_key:
             return jsonify({
-                "answer": "Groq API key is missing, so follow-up chat is unavailable."
+                "answer": "Follow-up chat is unavailable because the Groq key is missing."
             }), 200
 
         prompt = f"""
@@ -1589,9 +1607,16 @@ Do not mention page numbers.
 Keep it to 3 to 5 short lines.
 """
 
-        completion = client.chat.completions.create(
-            model=get_groq_text_model(),
-            messages=[
+        url = "https://api.groq.com/openai/v1/chat/completions"
+
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json"
+        }
+
+        payload = {
+            "model": get_groq_text_model(),
+            "messages": [
                 {
                     "role": "system",
                     "content": "You are a warm parent-friendly assistant for Troy World."
@@ -1601,12 +1626,18 @@ Keep it to 3 to 5 short lines.
                     "content": prompt
                 }
             ],
-            temperature=0.55,
-            top_p=0.9,
-            max_completion_tokens=300
-        )
+            "temperature": 0.55,
+            "top_p": 0.9,
+            "max_completion_tokens": 300
+        }
 
-        answer = completion.choices[0].message.content
+        response = requests.post(url, headers=headers, json=payload, timeout=30)
+
+        if response.status_code >= 400:
+            raise RuntimeError(response.text[:800])
+
+        data = response.json()
+        answer = data["choices"][0]["message"]["content"]
 
         return jsonify({
             "answer": remove_page_words(
