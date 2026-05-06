@@ -36,11 +36,9 @@ CORS(app, origins=CORS_ORIGINS.split(","))
 
 ALLOWED_EXTENSIONS = {"png", "jpg", "jpeg", "webp"}
 
-# Render-safe image settings
 MAX_BASE64_IMAGE_SIZE = 1_800_000
 Image.MAX_IMAGE_PIXELS = 15_000_000
 
-# Limited cache
 analysis_cache = OrderedDict()
 MAX_CACHE_ITEMS = 30
 
@@ -48,14 +46,13 @@ sessions = {}
 
 
 # =========================================================
-# Troy PDF Pattern Library
+# Troy pattern reference library
 # =========================================================
 
 TROY_PATTERN_LIBRARY = [
     {
         "id": "rocking_chair",
         "name": "Rocking Chair",
-        "page": 1,
         "category": "motion_structures",
         "visual_cues": [
             "chair-like seat",
@@ -69,7 +66,6 @@ TROY_PATTERN_LIBRARY = [
     {
         "id": "earthquake_resistant",
         "name": "Earthquake Resistant Structure",
-        "page": 2,
         "category": "motion_structures",
         "visual_cues": [
             "multi-floor building",
@@ -78,26 +74,24 @@ TROY_PATTERN_LIBRARY = [
             "curved rocker-like base pieces",
             "building sitting on movable supports"
         ],
-        "description": "A multi-level building placed on rocker-like supports to demonstrate earthquake resistance."
+        "description": "A multi-level building placed on rocker-like supports."
     },
     {
         "id": "troy_pendulum",
         "name": "Troy Pendulum",
-        "page": 3,
         "category": "motion_structures",
         "visual_cues": [
             "two vertical supports",
             "horizontal beam across the top",
-            "curved pieces hanging or placed below",
+            "curved pieces below",
             "triangle piece on top",
             "balanced pendulum-like setup"
         ],
-        "description": "A pendulum-style structure with two supports, a top beam, curved parts, and a central triangular piece."
+        "description": "A pendulum-style structure with supports, a top beam, curved parts, and a central triangular piece."
     },
     {
         "id": "newtons_pet",
         "name": "Newton's Pet",
-        "page": 4,
         "category": "motion_structures",
         "visual_cues": [
             "low vehicle-like base",
@@ -111,7 +105,6 @@ TROY_PATTERN_LIBRARY = [
     {
         "id": "charminar",
         "name": "Charminar",
-        "page": 5,
         "category": "monuments",
         "visual_cues": [
             "square monument base",
@@ -125,7 +118,6 @@ TROY_PATTERN_LIBRARY = [
     {
         "id": "qutub_minar",
         "name": "Qutub Minar",
-        "page": 6,
         "category": "monuments",
         "visual_cues": [
             "very tall narrow tower",
@@ -139,7 +131,6 @@ TROY_PATTERN_LIBRARY = [
     {
         "id": "shinto_arch",
         "name": "Shinto Arch",
-        "page": 7,
         "category": "places_of_worship",
         "visual_cues": [
             "two tall pillars",
@@ -153,7 +144,6 @@ TROY_PATTERN_LIBRARY = [
     {
         "id": "pickup_truck",
         "name": "Pickup Truck",
-        "page": 8,
         "category": "vehicles",
         "visual_cues": [
             "vehicle-like shape",
@@ -167,7 +157,6 @@ TROY_PATTERN_LIBRARY = [
     {
         "id": "highway",
         "name": "Highway",
-        "page": 9,
         "category": "vehicles",
         "visual_cues": [
             "long road-like path",
@@ -176,12 +165,11 @@ TROY_PATTERN_LIBRARY = [
             "extended roadway",
             "sign-like vertical blocks"
         ],
-        "description": "A long highway or roadway scene with ramps, bridge-like supports, and road sections."
+        "description": "A long highway or roadway scene with ramps, supports, and road sections."
     },
     {
         "id": "india_gate",
         "name": "India Gate",
-        "page": 10,
         "category": "monuments",
         "visual_cues": [
             "large arch opening",
@@ -195,7 +183,6 @@ TROY_PATTERN_LIBRARY = [
     {
         "id": "golden_gate_bridge",
         "name": "Golden Gate Bridge",
-        "page": 11,
         "category": "monuments",
         "visual_cues": [
             "long bridge",
@@ -207,23 +194,8 @@ TROY_PATTERN_LIBRARY = [
         "description": "A long bridge structure with tower-like frames and a stretched road section."
     },
     {
-        "id": "charminar_steps",
-        "name": "Charminar Step Build",
-        "page": 12,
-        "category": "monuments",
-        "visual_cues": [
-            "square base",
-            "four minarets",
-            "central structure",
-            "corner pillars",
-            "monument layout"
-        ],
-        "description": "A step-by-step Charminar style monument with a square base and four minarets."
-    },
-    {
         "id": "eiffel_tower",
         "name": "Eiffel Tower",
-        "page": 13,
         "category": "monuments",
         "visual_cues": [
             "tall tower",
@@ -237,7 +209,6 @@ TROY_PATTERN_LIBRARY = [
     {
         "id": "mosque",
         "name": "Mosque",
-        "page": 14,
         "category": "places_of_worship",
         "visual_cues": [
             "dome-like curved piece",
@@ -251,7 +222,6 @@ TROY_PATTERN_LIBRARY = [
     {
         "id": "gurudwara",
         "name": "Gurudwara",
-        "page": 15,
         "category": "places_of_worship",
         "visual_cues": [
             "dome-like top",
@@ -265,7 +235,6 @@ TROY_PATTERN_LIBRARY = [
     {
         "id": "greek_temple",
         "name": "Greek Temple",
-        "page": 16,
         "category": "places_of_worship",
         "visual_cues": [
             "front columns",
@@ -279,7 +248,6 @@ TROY_PATTERN_LIBRARY = [
     {
         "id": "taj_mahal",
         "name": "Taj Mahal",
-        "page": 17,
         "category": "monuments",
         "visual_cues": [
             "central dome",
@@ -293,7 +261,6 @@ TROY_PATTERN_LIBRARY = [
     {
         "id": "train",
         "name": "Train",
-        "page": 18,
         "category": "vehicles",
         "visual_cues": [
             "long vehicle body",
@@ -307,7 +274,6 @@ TROY_PATTERN_LIBRARY = [
     {
         "id": "ship",
         "name": "Ship",
-        "page": 19,
         "category": "vehicles",
         "visual_cues": [
             "long boat-like hull",
@@ -321,7 +287,6 @@ TROY_PATTERN_LIBRARY = [
     {
         "id": "temple",
         "name": "Temple",
-        "page": 20,
         "category": "places_of_worship",
         "visual_cues": [
             "stair or ramp front",
@@ -333,7 +298,6 @@ TROY_PATTERN_LIBRARY = [
         "description": "A temple-like build with a front ramp or stairs, pillars, and a roofed structure."
     }
 ]
-
 
 BOOK_MATCH_THRESHOLD = 78
 
@@ -402,7 +366,7 @@ print("Groq vision model:", get_groq_vision_model())
 
 
 # =========================================================
-# Error handlers
+# Error handling
 # =========================================================
 
 @app.errorhandler(RequestEntityTooLarge)
@@ -468,6 +432,7 @@ def extract_json_block(text):
 
     if text.startswith("```"):
         lines = text.splitlines()
+
         if len(lines) >= 3:
             text = "\n".join(lines[1:-1]).strip()
 
@@ -487,6 +452,7 @@ def parse_json_response(text):
 
 def is_rate_limit_error(error_text):
     lower = error_text.lower()
+
     return (
         "429" in lower
         or "rate limit" in lower
@@ -498,6 +464,7 @@ def is_rate_limit_error(error_text):
 
 def is_invalid_key_error(error_text):
     lower = error_text.lower()
+
     return (
         "401" in lower
         or "403" in lower
@@ -510,6 +477,7 @@ def is_invalid_key_error(error_text):
 
 def is_temporary_error(error_text):
     lower = error_text.lower()
+
     return (
         "500" in lower
         or "502" in lower
@@ -634,9 +602,8 @@ def compact_pattern_library_text():
     for pattern in TROY_PATTERN_LIBRARY:
         cue_text = ", ".join(pattern["visual_cues"])
         lines.append(
-            f'- Page {pattern["page"]}: {pattern["name"]} '
-            f'({pattern["category"]}) — {pattern["description"]} '
-            f'Visible cues: {cue_text}.'
+            f'- {pattern["name"]} ({pattern["category"]}) — '
+            f'{pattern["description"]} Visible cues: {cue_text}.'
         )
 
     return "\n".join(lines)
@@ -656,28 +623,35 @@ Child age:
 {age if age else "unknown"}
 
 You have a Troy pattern book reference list.
+
 Your job has TWO MODES:
 
-MODE 1: Pattern-book matching
-If the child's uploaded build clearly matches one pattern from the Troy pattern book, return matchType as "book_pattern".
+MODE 1: Pattern matching
+If the child's uploaded build clearly matches one known Troy pattern, return matchType as "book_pattern".
 Only do this when the match is visually strong.
 
 MODE 2: Creative open-ended analysis
-If the uploaded build does not clearly match any book pattern, return matchType as "creative_guess".
-Do not force random builds into the pattern book.
+If the uploaded build does not clearly match any known pattern, return matchType as "creative_guess".
+Do not force random builds into the pattern list.
 
-Troy pattern book reference:
+Known Troy patterns:
 {pattern_library}
 
+Important display rule:
+- Never mention page numbers in buildGuess, whatWeFound, whatTheyLearned, whatWeNoticed, suggestionsForParent, or nextBuildIdeas.
+- Do not say "page", "book page", or "from page".
+- If a known pattern matches, simply say it looks like the named pattern.
+- If no strong match exists, do normal creative analysis.
+
 Pattern matching rules:
-- Use the pattern book only when the uploaded build has the same main structure and visible cues.
+- Use the known pattern only when the uploaded build has the same main structure and visible cues.
 - A random tower should not become Qutub Minar unless it has a tapering monument-like tower shape.
-- A random multi-level block build should not become Earthquake Resistant Structure unless it has a multi-floor building form with rocker/movable base cues.
-- A random vehicle should not become Pickup Truck unless it has a long vehicle base and wheel/cylinder cues.
-- A random arch should not become India Gate unless it has a monument gateway form with side pillars and central arch.
+- A random multi-level block build should not become Earthquake Resistant Structure unless it has a multi-floor building form with rocker or movable base cues.
+- A random vehicle should not become Pickup Truck unless it has a long vehicle base and wheel or cylinder cues.
+- A random arch should not become India Gate unless it has a monument gateway form with side pillars and a central arch.
 - If similarity is weak or uncertain, use creative_guess.
 - If matchConfidence is below 78, use creative_guess.
-- If matchType is book_pattern, include page number, pattern name, and why it matches.
+- If matchType is book_pattern, include pattern name and why it matches.
 - If matchType is creative_guess, matchedPattern must be null.
 
 Feedback style for this image:
@@ -717,7 +691,6 @@ Return this exact JSON shape:
   "matchedPattern": {{
     "id": "pattern id or null",
     "name": "pattern name or null",
-    "page": 0,
     "category": "pattern category or null",
     "matchConfidence": 0,
     "whyMatched": "short visual reason or null"
@@ -774,7 +747,7 @@ Invalid image rules:
 
 
 # =========================================================
-# Specific feedback fallback logic
+# Specific fallback feedback logic
 # =========================================================
 
 def contains_any(text, words):
@@ -1093,7 +1066,6 @@ def normalize_matched_pattern(raw_matched_pattern, match_type):
 
     pattern_id = clean_text(raw_matched_pattern.get("id"))
     pattern_name = clean_text(raw_matched_pattern.get("name"))
-    page = raw_matched_pattern.get("page", 0)
     category = clean_text(raw_matched_pattern.get("category"))
     why_matched = clean_text(raw_matched_pattern.get("whyMatched"))
 
@@ -1106,22 +1078,20 @@ def normalize_matched_pattern(raw_matched_pattern, match_type):
 
     if library_pattern:
         pattern_name = library_pattern["name"]
-        page = library_pattern["page"]
         category = library_pattern["category"]
 
     if match_type != "book_pattern" or match_confidence < BOOK_MATCH_THRESHOLD:
         return None
 
-    if not pattern_name or not page:
+    if not pattern_name:
         return None
 
     return {
         "id": pattern_id or None,
         "name": pattern_name,
-        "page": page,
         "category": category or None,
         "matchConfidence": match_confidence,
-        "whyMatched": why_matched or "The uploaded build visually matches this Troy pattern."
+        "whyMatched": why_matched or "the visible structure matches the main shape and block arrangement"
     }
 
 
@@ -1179,6 +1149,56 @@ def normalize_learning_cards(cards, build_guess, summary, noticed, image_hash, m
     return cleaned[:3]
 
 
+def remove_page_words(text):
+    """
+    Extra safety: prevents page/book-page phrases from reaching frontend.
+    """
+    text = clean_text(text)
+
+    blocked_phrases = [
+        "from page",
+        "on page",
+        "book page",
+        "page number",
+        "page 1",
+        "page 2",
+        "page 3",
+        "page 4",
+        "page 5",
+        "page 6",
+        "page 7",
+        "page 8",
+        "page 9",
+        "page 10",
+        "page 11",
+        "page 12",
+        "page 13",
+        "page 14",
+        "page 15",
+        "page 16",
+        "page 17",
+        "page 18",
+        "page 19",
+        "page 20"
+    ]
+
+    lowered = text.lower()
+
+    if any(phrase in lowered for phrase in blocked_phrases):
+        text = (
+            text.replace("from page", "from the pattern reference")
+            .replace("on page", "in the pattern reference")
+            .replace("book page", "pattern reference")
+            .replace("page number", "pattern reference")
+        )
+
+        for number in range(1, 21):
+            text = text.replace(f"page {number}", "the pattern reference")
+            text = text.replace(f"Page {number}", "the pattern reference")
+
+    return clean_text(text)
+
+
 def normalize_analysis_response(parsed, image_hash):
     image_status = clean_text(parsed.get("imageStatus", "invalid")).lower()
 
@@ -1215,27 +1235,35 @@ def normalize_analysis_response(parsed, image_hash):
         limit=3
     )
 
+    noticed = [remove_page_words(item) for item in noticed]
+
     if matched_pattern:
-        default_title = f"{matched_pattern['name']} Pattern"
-        default_subtitle = f"This looks close to the {matched_pattern['name']} design from page {matched_pattern['page']} of the Troy pattern book."
+        default_title = f"{matched_pattern['name']} Style Build"
+        default_subtitle = (
+            f"This looks like the {matched_pattern['name']} pattern because "
+            f"{matched_pattern['whyMatched']}."
+        )
     else:
         default_title = "Open-ended Troy block build"
         default_subtitle = "The child created a visible structure using blocks."
 
     normalized_build_guess = {
-        "title": clean_text(build_guess.get("title"), default_title),
-        "subtitle": clean_text(build_guess.get("subtitle"), default_subtitle)
+        "title": remove_page_words(clean_text(build_guess.get("title"), default_title)),
+        "subtitle": remove_page_words(clean_text(build_guess.get("subtitle"), default_subtitle))
     }
 
     if matched_pattern:
-        normalized_build_guess["title"] = f"{matched_pattern['name']} Pattern"
+        normalized_build_guess["title"] = f"{matched_pattern['name']} Style Build"
         normalized_build_guess["subtitle"] = (
-            f"This build looks similar to page {matched_pattern['page']} from the Troy pattern book because {matched_pattern['whyMatched']}"
+            f"This looks like the {matched_pattern['name']} pattern because "
+            f"{matched_pattern['whyMatched']}."
         )
 
-    normalized_summary = clean_text(
-        what_found.get("summary"),
-        "The image shows a child-made block structure with visible block placement."
+    normalized_summary = remove_page_words(
+        clean_text(
+            what_found.get("summary"),
+            "The image shows a child-made block structure with visible block placement."
+        )
     )
 
     result = {
@@ -1258,24 +1286,28 @@ def normalize_analysis_response(parsed, image_hash):
             matched_pattern=matched_pattern
         ),
         "whatWeNoticed": noticed,
-        "suggestionsForParent": ensure_list(
-            parsed.get("suggestionsForParent"),
-            [
-                "Ask your child what each part of the build represents.",
-                "Invite your child to add one new detail to the build.",
-                "Take another photo after your child improves or changes the structure."
-            ],
-            limit=3
-        ),
-        "nextBuildIdeas": ensure_list(
-            parsed.get("nextBuildIdeas"),
-            [
-                "Build a version with one extra level or section.",
-                "Add a path, door, bridge, or moving part.",
-                "Try rebuilding the same idea using fewer blocks."
-            ],
-            limit=3
-        ),
+        "suggestionsForParent": [
+            remove_page_words(item) for item in ensure_list(
+                parsed.get("suggestionsForParent"),
+                [
+                    "Ask your child what each part of the build represents.",
+                    "Invite your child to add one new detail to the build.",
+                    "Take another photo after your child improves or changes the structure."
+                ],
+                limit=3
+            )
+        ],
+        "nextBuildIdeas": [
+            remove_page_words(item) for item in ensure_list(
+                parsed.get("nextBuildIdeas"),
+                [
+                    "Build a version with one extra level or section.",
+                    "Add a path, door, bridge, or moving part.",
+                    "Try rebuilding the same idea using fewer blocks."
+                ],
+                limit=3
+            )
+        ],
         "session_id": str(uuid.uuid4())
     }
 
@@ -1371,9 +1403,11 @@ def analyze_image_with_fallback(pil_img, image_data_url, age, image_hash):
     errors = []
 
     try:
+        print("Trying Gemini first...")
         parsed = analyze_with_gemini(pil_img, age, image_hash)
         result = normalize_analysis_response(parsed, image_hash)
         result["provider"] = "gemini"
+        print("Gemini analysis successful")
         return result
 
     except Exception as e:
@@ -1382,9 +1416,11 @@ def analyze_image_with_fallback(pil_img, image_data_url, age, image_hash):
         errors.append(f"Gemini: {error_text}")
 
     try:
+        print("Trying Groq fallback...")
         parsed = analyze_with_groq(image_data_url, age, image_hash)
         result = normalize_analysis_response(parsed, image_hash)
         result["provider"] = "groq"
+        print("Groq fallback successful")
         return result
 
     except Exception as e:
@@ -1549,6 +1585,7 @@ Parent question:
 Answer in a short, warm, creative but realistic way.
 Use only the build details provided.
 Do not invent hidden abilities or unseen parts.
+Do not mention page numbers.
 Keep it to 3 to 5 short lines.
 """
 
@@ -1572,9 +1609,8 @@ Keep it to 3 to 5 short lines.
         answer = completion.choices[0].message.content
 
         return jsonify({
-            "answer": clean_text(
-                answer,
-                "I’m unable to answer that right now. Please try again."
+            "answer": remove_page_words(
+                clean_text(answer, "I’m unable to answer that right now. Please try again.")
             )
         }), 200
 
