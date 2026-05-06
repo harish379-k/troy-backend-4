@@ -36,15 +36,306 @@ CORS(app, origins=CORS_ORIGINS.split(","))
 
 ALLOWED_EXTENSIONS = {"png", "jpg", "jpeg", "webp"}
 
-# Render-safe image size
+# Render-safe image settings
 MAX_BASE64_IMAGE_SIZE = 1_800_000
 Image.MAX_IMAGE_PIXELS = 15_000_000
 
-# Limited in-memory cache
+# Limited cache
 analysis_cache = OrderedDict()
 MAX_CACHE_ITEMS = 30
 
 sessions = {}
+
+
+# =========================================================
+# Troy PDF Pattern Library
+# =========================================================
+
+TROY_PATTERN_LIBRARY = [
+    {
+        "id": "rocking_chair",
+        "name": "Rocking Chair",
+        "page": 1,
+        "category": "motion_structures",
+        "visual_cues": [
+            "chair-like seat",
+            "slanted backrest",
+            "curved rocker base",
+            "small cylinders below the seat",
+            "two curved rails touching the ground"
+        ],
+        "description": "A chair with a seat, backrest, and curved rocker rails at the bottom."
+    },
+    {
+        "id": "earthquake_resistant",
+        "name": "Earthquake Resistant Structure",
+        "page": 2,
+        "category": "motion_structures",
+        "visual_cues": [
+            "multi-floor building",
+            "rectangular levels",
+            "small top tower or roof piece",
+            "curved rocker-like base pieces",
+            "building sitting on movable supports"
+        ],
+        "description": "A multi-level building placed on rocker-like supports to demonstrate earthquake resistance."
+    },
+    {
+        "id": "troy_pendulum",
+        "name": "Troy Pendulum",
+        "page": 3,
+        "category": "motion_structures",
+        "visual_cues": [
+            "two vertical supports",
+            "horizontal beam across the top",
+            "curved pieces hanging or placed below",
+            "triangle piece on top",
+            "balanced pendulum-like setup"
+        ],
+        "description": "A pendulum-style structure with two supports, a top beam, curved parts, and a central triangular piece."
+    },
+    {
+        "id": "newtons_pet",
+        "name": "Newton's Pet",
+        "page": 4,
+        "category": "motion_structures",
+        "visual_cues": [
+            "low vehicle-like base",
+            "long rectangular block on top",
+            "cylinders underneath",
+            "curved pieces at the bottom",
+            "animal or pet-like moving form"
+        ],
+        "description": "A low rolling pet-like build using cylinders and curved base pieces."
+    },
+    {
+        "id": "charminar",
+        "name": "Charminar",
+        "page": 5,
+        "category": "monuments",
+        "visual_cues": [
+            "square monument base",
+            "four corner towers",
+            "four pillars or minarets",
+            "central opening",
+            "symmetrical monument layout"
+        ],
+        "description": "A monument-like build with four corner pillars or minarets and a central structure."
+    },
+    {
+        "id": "qutub_minar",
+        "name": "Qutub Minar",
+        "page": 6,
+        "category": "monuments",
+        "visual_cues": [
+            "very tall narrow tower",
+            "stacked vertical blocks",
+            "wide base",
+            "tapering tower shape",
+            "monument tower form"
+        ],
+        "description": "A tall tapering tower structure with stacked blocks and a wider base."
+    },
+    {
+        "id": "shinto_arch",
+        "name": "Shinto Arch",
+        "page": 7,
+        "category": "places_of_worship",
+        "visual_cues": [
+            "two tall pillars",
+            "horizontal beam across top",
+            "gate-like structure",
+            "angled blocks near the top",
+            "open space below the beam"
+        ],
+        "description": "A gate or arch structure with two vertical supports and a strong horizontal top beam."
+    },
+    {
+        "id": "pickup_truck",
+        "name": "Pickup Truck",
+        "page": 8,
+        "category": "vehicles",
+        "visual_cues": [
+            "vehicle-like shape",
+            "four cylinder wheels",
+            "flat truck bed",
+            "raised cabin or block section",
+            "long rectangular base"
+        ],
+        "description": "A pickup truck build with a long base, raised cabin or bed, and cylinder wheels."
+    },
+    {
+        "id": "highway",
+        "name": "Highway",
+        "page": 9,
+        "category": "vehicles",
+        "visual_cues": [
+            "long road-like path",
+            "ramp pieces",
+            "bridge supports",
+            "extended roadway",
+            "sign-like vertical blocks"
+        ],
+        "description": "A long highway or roadway scene with ramps, bridge-like supports, and road sections."
+    },
+    {
+        "id": "india_gate",
+        "name": "India Gate",
+        "page": 10,
+        "category": "monuments",
+        "visual_cues": [
+            "large arch opening",
+            "two tall side pillars",
+            "rectangular gateway",
+            "stepped top",
+            "monument gate shape"
+        ],
+        "description": "A large monument-style gateway with a central arch and tall side supports."
+    },
+    {
+        "id": "golden_gate_bridge",
+        "name": "Golden Gate Bridge",
+        "page": 11,
+        "category": "monuments",
+        "visual_cues": [
+            "long bridge",
+            "two vertical tower frames",
+            "roadway stretching across",
+            "repeated supports",
+            "bridge-like span"
+        ],
+        "description": "A long bridge structure with tower-like frames and a stretched road section."
+    },
+    {
+        "id": "charminar_steps",
+        "name": "Charminar Step Build",
+        "page": 12,
+        "category": "monuments",
+        "visual_cues": [
+            "square base",
+            "four minarets",
+            "central structure",
+            "corner pillars",
+            "monument layout"
+        ],
+        "description": "A step-by-step Charminar style monument with a square base and four minarets."
+    },
+    {
+        "id": "eiffel_tower",
+        "name": "Eiffel Tower",
+        "page": 13,
+        "category": "monuments",
+        "visual_cues": [
+            "tall tower",
+            "four angled legs",
+            "narrow top",
+            "wide bottom supports",
+            "tapering tower"
+        ],
+        "description": "A tall Eiffel Tower-like structure with angled supports and a narrow upper section."
+    },
+    {
+        "id": "mosque",
+        "name": "Mosque",
+        "page": 14,
+        "category": "places_of_worship",
+        "visual_cues": [
+            "dome-like curved piece",
+            "arched entrance",
+            "sloped ramp",
+            "small towers or minarets",
+            "religious building form"
+        ],
+        "description": "A mosque-style structure with an arch, dome-like curved piece, and entrance."
+    },
+    {
+        "id": "gurudwara",
+        "name": "Gurudwara",
+        "page": 15,
+        "category": "places_of_worship",
+        "visual_cues": [
+            "dome-like top",
+            "arched opening",
+            "tall side pillars",
+            "sloped path or ramp",
+            "place of worship structure"
+        ],
+        "description": "A Gurudwara-style place of worship with an arched body, dome-like feature, and tall side elements."
+    },
+    {
+        "id": "greek_temple",
+        "name": "Greek Temple",
+        "page": 16,
+        "category": "places_of_worship",
+        "visual_cues": [
+            "front columns",
+            "temple roof",
+            "rectangular platform",
+            "stair-like front",
+            "classical temple shape"
+        ],
+        "description": "A Greek temple-like structure with columns, a roof, and a front platform or stairs."
+    },
+    {
+        "id": "taj_mahal",
+        "name": "Taj Mahal",
+        "page": 17,
+        "category": "monuments",
+        "visual_cues": [
+            "central dome",
+            "arched doorway",
+            "four minarets",
+            "symmetrical monument",
+            "large central building"
+        ],
+        "description": "A Taj Mahal-like monument with a central dome, arch, and surrounding minarets."
+    },
+    {
+        "id": "train",
+        "name": "Train",
+        "page": 18,
+        "category": "vehicles",
+        "visual_cues": [
+            "long vehicle body",
+            "cylinder chimney",
+            "connected wagons",
+            "curved roof pieces",
+            "engine-like front"
+        ],
+        "description": "A train build with a long body, chimney cylinder, and wagon-like sections."
+    },
+    {
+        "id": "ship",
+        "name": "Ship",
+        "page": 19,
+        "category": "vehicles",
+        "visual_cues": [
+            "long boat-like hull",
+            "cabin block",
+            "cylinder chimney",
+            "pointed or sloped front",
+            "ship-like body"
+        ],
+        "description": "A ship or boat-like build with a long hull, cabin, and cylinder chimney."
+    },
+    {
+        "id": "temple",
+        "name": "Temple",
+        "page": 20,
+        "category": "places_of_worship",
+        "visual_cues": [
+            "stair or ramp front",
+            "pillars",
+            "roof structure",
+            "temple-like body",
+            "raised entrance"
+        ],
+        "description": "A temple-like build with a front ramp or stairs, pillars, and a roofed structure."
+    }
+]
+
+
+BOOK_MATCH_THRESHOLD = 78
 
 
 # =========================================================
@@ -56,7 +347,7 @@ def get_gemini_api_key():
 
 
 def get_gemini_model():
-    return os.environ.get("GEMINI_MODEL", "gemini-2.5-flash").strip()
+    return os.environ.get("GEMINI_MODEL", "gemini-2.5-flash-lite").strip()
 
 
 def get_groq_api_key():
@@ -88,9 +379,9 @@ def build_gemini_model():
     return genai.GenerativeModel(
         get_gemini_model(),
         generation_config={
-            "temperature": 0.78,
+            "temperature": 0.72,
             "top_p": 0.95,
-            "max_output_tokens": 1500
+            "max_output_tokens": 1600
         }
     )
 
@@ -241,13 +532,6 @@ def encode_image_to_base64_jpeg(img, quality):
 
 
 def prepare_image_for_models(image_file):
-    """
-    Returns:
-    1. PIL image for Gemini
-    2. base64 data URL for Groq
-    3. image hash for caching and feedback variation
-    """
-
     img = Image.open(image_file.stream)
     img = ImageOps.exif_transpose(img)
 
@@ -284,13 +568,11 @@ def prepare_image_for_models(image_file):
 
             return pil_img, data_url, image_hash
 
-    raise ValueError(
-        "Image is too large even after compression. Please upload a smaller image."
-    )
+    raise ValueError("Image is too large even after compression. Please upload a smaller image.")
 
 
 # =========================================================
-# Creative variation helpers
+# Feedback variation
 # =========================================================
 
 def pick_feedback_style(image_hash):
@@ -343,12 +625,27 @@ def build_unique_hint(image_hash):
 
 
 # =========================================================
-# Prompt
+# Prompt builders
 # =========================================================
+
+def compact_pattern_library_text():
+    lines = []
+
+    for pattern in TROY_PATTERN_LIBRARY:
+        cue_text = ", ".join(pattern["visual_cues"])
+        lines.append(
+            f'- Page {pattern["page"]}: {pattern["name"]} '
+            f'({pattern["category"]}) — {pattern["description"]} '
+            f'Visible cues: {cue_text}.'
+        )
+
+    return "\n".join(lines)
+
 
 def build_troy_prompt(age, image_hash):
     style = pick_feedback_style(image_hash)
     unique_hint = build_unique_hint(image_hash)
+    pattern_library = compact_pattern_library_text()
 
     return f"""
 You are Troy AI Analyzer.
@@ -358,81 +655,57 @@ You are analyzing one uploaded image of a child's Troy wooden-block build.
 Child age:
 {age if age else "unknown"}
 
+You have a Troy pattern book reference list.
+Your job has TWO MODES:
+
+MODE 1: Pattern-book matching
+If the child's uploaded build clearly matches one pattern from the Troy pattern book, return matchType as "book_pattern".
+Only do this when the match is visually strong.
+
+MODE 2: Creative open-ended analysis
+If the uploaded build does not clearly match any book pattern, return matchType as "creative_guess".
+Do not force random builds into the pattern book.
+
+Troy pattern book reference:
+{pattern_library}
+
+Pattern matching rules:
+- Use the pattern book only when the uploaded build has the same main structure and visible cues.
+- A random tower should not become Qutub Minar unless it has a tapering monument-like tower shape.
+- A random multi-level block build should not become Earthquake Resistant Structure unless it has a multi-floor building form with rocker/movable base cues.
+- A random vehicle should not become Pickup Truck unless it has a long vehicle base and wheel/cylinder cues.
+- A random arch should not become India Gate unless it has a monument gateway form with side pillars and central arch.
+- If similarity is weak or uncertain, use creative_guess.
+- If matchConfidence is below 78, use creative_guess.
+- If matchType is book_pattern, include page number, pattern name, and why it matches.
+- If matchType is creative_guess, matchedPattern must be null.
+
 Feedback style for this image:
 {style["name"]} — {style["instruction"]}
 
 Uniqueness instruction:
 {unique_hint}
 
-Goal:
-Give feedback like a careful, creative human teacher who is looking at this exact photo.
-
-Important rules:
+General analysis rules:
 - Look at the whole image first.
-- Give a creative but realistic guess about what the child may have built.
+- Give a creative but realistic guess.
 - Do not force labels like tower, house, bridge, or car.
 - If it looks like a hybrid idea, describe the hybrid naturally.
-  Examples:
-  moving house, house-on-wheels, bridge-house, layered building,
-  castle gate, pretend-play scene, animal-like vehicle, abstract machine,
-  raised platform, tiny city, block vehicle with a room, walking creature,
-  parking garage, lookout post, tunnel path, stage, playground structure.
 - If it has floors or sections going upward, do not automatically call it a tower.
-  It may be a multi-level building, layered structure, raised house, platform scene,
-  parking-garage-like build, lookout station, or pretend-play setup.
-- If the child combines multiple ideas, mention the combination.
+- It may be a multi-level building, layered structure, raised house, platform scene, parking-garage-like build, lookout station, or pretend-play setup.
 - Base every sentence only on visible details.
-- Mention visible parts such as base, floors, levels, gaps, supports,
-  repeated blocks, stacked sections, roof-like pieces, wheel-like parts,
-  curved pieces, openings, paths, bridges, rooms, platforms, loose blocks,
-  or upper/lower sections if visible.
+- Mention visible parts such as base, floors, levels, gaps, supports, repeated blocks, stacked sections, roof-like pieces, wheel-like parts, curved pieces, openings, paths, bridges, rooms, platforms, loose blocks, or upper/lower sections if visible.
 - If the image is not a Troy/block build, mark it invalid.
 - If unsure, use cautious phrases like "looks like", "could be", or "seems to".
 - Keep the tone simple, warm, parent-friendly, and encouraging.
-- Do not overclaim.
 - Return JSON only.
 
 BANNED LEARNING CARD TITLES:
-Do not use these titles:
-- Creativity
-- Problem-Solving
-- Problem Solving
-- Spatial Awareness
-- Spatial Thinking
-- Imagination
-- Motor Skills
-- Fine Motor Skills
-- Engineering
-- STEM Learning
-- Critical Thinking
+Do not use:
+Creativity, Problem-Solving, Problem Solving, Spatial Awareness, Spatial Thinking, Imagination, Motor Skills, Fine Motor Skills, Engineering, STEM Learning, Critical Thinking.
 
-Instead, use specific learning card titles based on the visible build, such as:
-- Layer Planning
-- Upper-Level Building
-- Bridge Support
-- Moving Base Idea
-- Tiny Home Story
-- Roof Shape Experiment
-- Open-Space Design
-- Block Pattern Play
-- Creature-Making
-- Careful Stacking
-- Shape Combining
-- Idea Mixing
-- Build-and-Tell Practice
-- Small-World Making
-- Support Below, Space Above
-- Vehicle Shape Thinking
-- Room-Making
-- Entrance Building
-- Testing What Holds
-- Above-Below Thinking
-
-Each learning card must:
-- be specific to this exact build
-- mention a visible detail from the image
-- avoid generic praise
-- sound different from the other two cards
+Use specific learning card titles like:
+Layer Planning, Upper-Level Building, Bridge Support, Moving Base Idea, Tiny Home Story, Roof Shape Experiment, Open-Space Design, Block Pattern Play, Creature-Making, Careful Stacking, Shape Combining, Idea Mixing, Build-and-Tell Practice, Small-World Making, Support Below Space Above, Vehicle Shape Thinking, Room-Making, Entrance Building, Testing What Holds, Above-Below Thinking.
 
 Return this exact JSON shape:
 
@@ -440,6 +713,15 @@ Return this exact JSON shape:
   "status": "success",
   "imageStatus": "valid or invalid",
   "confidenceScore": 0,
+  "matchType": "book_pattern or creative_guess or invalid",
+  "matchedPattern": {{
+    "id": "pattern id or null",
+    "name": "pattern name or null",
+    "page": 0,
+    "category": "pattern category or null",
+    "matchConfidence": 0,
+    "whyMatched": "short visual reason or null"
+  }},
   "buildGuess": {{
     "title": "creative but realistic build guess",
     "subtitle": "short reason based on visible image details"
@@ -482,9 +764,11 @@ Return this exact JSON shape:
   ]
 }}
 
-Rules for invalid image:
+Invalid image rules:
 - imageStatus must be "invalid"
+- matchType must be "invalid"
 - confidenceScore must be below 65
+- matchedPattern must contain null values
 - whatTheyLearned must be []
 """
 
@@ -498,22 +782,45 @@ def contains_any(text, words):
     return any(word in text for word in words)
 
 
-def build_context_text(build_guess, summary, noticed):
+def build_context_text(build_guess, summary, noticed, matched_pattern=None):
+    pattern_text = ""
+
+    if matched_pattern and isinstance(matched_pattern, dict):
+        pattern_text = " ".join([
+            clean_text(matched_pattern.get("name", "")),
+            clean_text(matched_pattern.get("whyMatched", "")),
+            clean_text(matched_pattern.get("category", ""))
+        ])
+
     return " ".join([
         clean_text(build_guess.get("title", "")),
         clean_text(build_guess.get("subtitle", "")),
         clean_text(summary),
-        " ".join(noticed or [])
+        " ".join(noticed or []),
+        pattern_text
     ]).lower()
 
 
-def creative_fallback_cards(build_guess, summary, noticed, image_hash):
-    context = build_context_text(build_guess, summary, noticed)
+def creative_fallback_cards(build_guess, summary, noticed, image_hash, matched_pattern=None):
+    context = build_context_text(build_guess, summary, noticed, matched_pattern)
     main_detail = noticed[0] if noticed else "the visible block arrangement"
 
     card_pool = []
 
-    # Multi-level / floor / layered builds
+    if contains_any(context, ["rocking", "rocker", "curved rail", "chair"]):
+        card_pool.extend([
+            {
+                "title": "Motion Design",
+                "description": "The child explored how curved base pieces can make a build feel like it could rock or move.",
+                "color": "cream"
+            },
+            {
+                "title": "Seat-and-Back Planning",
+                "description": "The build encourages thinking about how a seat and backrest can work together.",
+                "color": "green"
+            }
+        ])
+
     if contains_any(context, ["level", "floor", "platform", "layer", "upper", "lower", "multi-level"]):
         card_pool.extend([
             {
@@ -527,14 +834,13 @@ def creative_fallback_cards(build_guess, summary, noticed, image_hash):
                 "color": "green"
             },
             {
-                "title": "Support Below, Space Above",
+                "title": "Support Below Space Above",
                 "description": "The build encourages the child to think about how bottom blocks can hold up higher sections.",
                 "color": "blue"
             }
         ])
 
-    # Vehicle / moving base builds
-    if contains_any(context, ["wheel", "vehicle", "moving", "car", "base", "travel", "rolling"]):
+    if contains_any(context, ["wheel", "vehicle", "moving", "car", "base", "travel", "rolling", "truck", "train", "ship"]):
         card_pool.extend([
             {
                 "title": "Moving Base Idea",
@@ -553,7 +859,6 @@ def creative_fallback_cards(build_guess, summary, noticed, image_hash):
             }
         ])
 
-    # House / room / roof builds
     if contains_any(context, ["house", "home", "room", "roof", "door", "window", "shelter"]):
         card_pool.extend([
             {
@@ -573,8 +878,7 @@ def creative_fallback_cards(build_guess, summary, noticed, image_hash):
             }
         ])
 
-    # Bridge / gap / support builds
-    if contains_any(context, ["bridge", "gap", "span", "across", "support", "beam"]):
+    if contains_any(context, ["bridge", "gap", "span", "across", "support", "beam", "highway"]):
         card_pool.extend([
             {
                 "title": "Bridge Support",
@@ -593,8 +897,7 @@ def creative_fallback_cards(build_guess, summary, noticed, image_hash):
             }
         ])
 
-    # Gate / arch / tunnel builds
-    if contains_any(context, ["gate", "arch", "opening", "entrance", "tunnel", "curve"]):
+    if contains_any(context, ["gate", "arch", "opening", "entrance", "tunnel", "curve", "india gate", "shinto"]):
         card_pool.extend([
             {
                 "title": "Open-Space Design",
@@ -613,8 +916,7 @@ def creative_fallback_cards(build_guess, summary, noticed, image_hash):
             }
         ])
 
-    # Pattern / repeated blocks
-    if contains_any(context, ["repeat", "repeated", "same", "pattern", "symmetry", "line", "row"]):
+    if contains_any(context, ["repeat", "repeated", "same", "pattern", "symmetry", "line", "row", "monument"]):
         card_pool.extend([
             {
                 "title": "Block Pattern Play",
@@ -633,28 +935,7 @@ def creative_fallback_cards(build_guess, summary, noticed, image_hash):
             }
         ])
 
-    # Animal / creature builds
-    if contains_any(context, ["animal", "creature", "head", "legs", "tail", "body", "neck"]):
-        card_pool.extend([
-            {
-                "title": "Creature-Making",
-                "description": "The child used simple block parts to suggest a body, head, legs, or creature-like shape.",
-                "color": "cream"
-            },
-            {
-                "title": "Character Building",
-                "description": "The animal-like shape can become a pretend character in the child’s play story.",
-                "color": "green"
-            },
-            {
-                "title": "Body-Part Thinking",
-                "description": "The child explored how separate blocks can stand for different parts of one living thing.",
-                "color": "blue"
-            }
-        ])
-
-    # Tall / stacking builds
-    if contains_any(context, ["tower", "stack", "tall", "height", "vertical"]):
+    if contains_any(context, ["tower", "stack", "tall", "height", "vertical", "qutub", "eiffel", "minar"]):
         card_pool.extend([
             {
                 "title": "Careful Stacking",
@@ -673,7 +954,6 @@ def creative_fallback_cards(build_guess, summary, noticed, image_hash):
             }
         ])
 
-    # Hybrid / pretend builds
     if contains_any(context, ["hybrid", "combines", "combination", "moving house", "house-on-wheels", "machine", "pretend", "scene"]):
         card_pool.extend([
             {
@@ -693,7 +973,13 @@ def creative_fallback_cards(build_guess, summary, noticed, image_hash):
             }
         ])
 
-    # Always available non-generic cards
+    if matched_pattern and matched_pattern.get("name"):
+        card_pool.append({
+            "title": "Pattern Matching",
+            "description": f"The child recreated parts of the {matched_pattern.get('name')} pattern while making choices about placement and shape.",
+            "color": "cream"
+        })
+
     card_pool.extend([
         {
             "title": "Block Decision-Making",
@@ -719,11 +1005,6 @@ def creative_fallback_cards(build_guess, summary, noticed, image_hash):
             "title": "Small-World Making",
             "description": "The build can become a tiny play world with places, paths, rooms, or moving parts.",
             "color": "green"
-        },
-        {
-            "title": "Build Revision",
-            "description": "The child can look at the structure and decide what to add, remove, strengthen, or rename.",
-            "color": "blue"
         }
     ])
 
@@ -792,13 +1073,59 @@ def is_weak_learning_card(card):
         "learned engineering"
     ]
 
-    if any(phrase in description for phrase in generic_phrases):
-        return True
-
-    return False
+    return any(phrase in description for phrase in generic_phrases)
 
 
-def normalize_learning_cards(cards, build_guess, summary, noticed, image_hash):
+# =========================================================
+# Response normalization
+# =========================================================
+
+def find_pattern_by_id(pattern_id):
+    for pattern in TROY_PATTERN_LIBRARY:
+        if pattern["id"] == pattern_id:
+            return pattern
+    return None
+
+
+def normalize_matched_pattern(raw_matched_pattern, match_type):
+    if not isinstance(raw_matched_pattern, dict):
+        return None
+
+    pattern_id = clean_text(raw_matched_pattern.get("id"))
+    pattern_name = clean_text(raw_matched_pattern.get("name"))
+    page = raw_matched_pattern.get("page", 0)
+    category = clean_text(raw_matched_pattern.get("category"))
+    why_matched = clean_text(raw_matched_pattern.get("whyMatched"))
+
+    try:
+        match_confidence = int(float(raw_matched_pattern.get("matchConfidence", 0)))
+    except Exception:
+        match_confidence = 0
+
+    library_pattern = find_pattern_by_id(pattern_id)
+
+    if library_pattern:
+        pattern_name = library_pattern["name"]
+        page = library_pattern["page"]
+        category = library_pattern["category"]
+
+    if match_type != "book_pattern" or match_confidence < BOOK_MATCH_THRESHOLD:
+        return None
+
+    if not pattern_name or not page:
+        return None
+
+    return {
+        "id": pattern_id or None,
+        "name": pattern_name,
+        "page": page,
+        "category": category or None,
+        "matchConfidence": match_confidence,
+        "whyMatched": why_matched or "The uploaded build visually matches this Troy pattern."
+    }
+
+
+def normalize_learning_cards(cards, build_guess, summary, noticed, image_hash, matched_pattern=None):
     allowed_colors = ["cream", "green", "blue"]
     cleaned = []
 
@@ -828,7 +1155,14 @@ def normalize_learning_cards(cards, build_guess, summary, noticed, image_hash):
 
             cleaned.append(temp_card)
 
-    fallback_cards = creative_fallback_cards(build_guess, summary, noticed, image_hash)
+    fallback_cards = creative_fallback_cards(
+        build_guess,
+        summary,
+        noticed,
+        image_hash,
+        matched_pattern=matched_pattern
+    )
+
     existing_titles = {card["title"].lower() for card in cleaned}
 
     for fallback in fallback_cards:
@@ -853,6 +1187,21 @@ def normalize_analysis_response(parsed, image_hash):
     except Exception:
         confidence = 0
 
+    raw_match_type = clean_text(parsed.get("matchType", "creative_guess")).lower()
+    raw_matched_pattern = parsed.get("matchedPattern")
+
+    if image_status == "invalid":
+        final_match_type = "invalid"
+    elif raw_match_type == "book_pattern":
+        final_match_type = "book_pattern"
+    else:
+        final_match_type = "creative_guess"
+
+    matched_pattern = normalize_matched_pattern(raw_matched_pattern, final_match_type)
+
+    if not matched_pattern and final_match_type == "book_pattern":
+        final_match_type = "creative_guess"
+
     build_guess = safe_get_dict(parsed, "buildGuess")
     what_found = safe_get_dict(parsed, "whatWeFound")
 
@@ -866,16 +1215,23 @@ def normalize_analysis_response(parsed, image_hash):
         limit=3
     )
 
+    if matched_pattern:
+        default_title = f"{matched_pattern['name']} Pattern"
+        default_subtitle = f"This looks close to the {matched_pattern['name']} design from page {matched_pattern['page']} of the Troy pattern book."
+    else:
+        default_title = "Open-ended Troy block build"
+        default_subtitle = "The child created a visible structure using blocks."
+
     normalized_build_guess = {
-        "title": clean_text(
-            build_guess.get("title"),
-            "Open-ended Troy block build"
-        ),
-        "subtitle": clean_text(
-            build_guess.get("subtitle"),
-            "The child created a visible structure using blocks."
-        )
+        "title": clean_text(build_guess.get("title"), default_title),
+        "subtitle": clean_text(build_guess.get("subtitle"), default_subtitle)
     }
+
+    if matched_pattern:
+        normalized_build_guess["title"] = f"{matched_pattern['name']} Pattern"
+        normalized_build_guess["subtitle"] = (
+            f"This build looks similar to page {matched_pattern['page']} from the Troy pattern book because {matched_pattern['whyMatched']}"
+        )
 
     normalized_summary = clean_text(
         what_found.get("summary"),
@@ -886,6 +1242,8 @@ def normalize_analysis_response(parsed, image_hash):
         "status": "success",
         "imageStatus": "valid" if image_status == "valid" and confidence >= 65 else "invalid",
         "confidenceScore": confidence,
+        "matchType": final_match_type,
+        "matchedPattern": matched_pattern,
         "buildGuess": normalized_build_guess,
         "whatWeFound": {
             "title": "What we found",
@@ -896,7 +1254,8 @@ def normalize_analysis_response(parsed, image_hash):
             normalized_build_guess,
             normalized_summary,
             noticed,
-            image_hash
+            image_hash,
+            matched_pattern=matched_pattern
         ),
         "whatWeNoticed": noticed,
         "suggestionsForParent": ensure_list(
@@ -921,6 +1280,8 @@ def normalize_analysis_response(parsed, image_hash):
     }
 
     if result["imageStatus"] == "invalid":
+        result["matchType"] = "invalid"
+        result["matchedPattern"] = None
         result["whatTheyLearned"] = []
         result["buildGuess"] = {
             "title": "We couldn’t clearly analyze this image",
@@ -986,9 +1347,9 @@ def analyze_with_groq(image_data_url, age, image_hash):
                 ]
             }
         ],
-        temperature=0.78,
+        temperature=0.72,
         top_p=0.95,
-        max_completion_tokens=1500,
+        max_completion_tokens=1600,
         response_format={
             "type": "json_object"
         }
@@ -1061,7 +1422,17 @@ def health():
         "gemini_key_loaded": bool(get_gemini_api_key()),
         "gemini_model": get_gemini_model(),
         "groq_key_loaded": bool(get_groq_api_key()),
-        "groq_vision_model": get_groq_vision_model()
+        "groq_vision_model": get_groq_vision_model(),
+        "pattern_count": len(TROY_PATTERN_LIBRARY),
+        "book_match_threshold": BOOK_MATCH_THRESHOLD
+    })
+
+
+@app.route("/patterns", methods=["GET"])
+def patterns():
+    return jsonify({
+        "count": len(TROY_PATTERN_LIBRARY),
+        "patterns": TROY_PATTERN_LIBRARY
     })
 
 
@@ -1110,7 +1481,8 @@ def analyze():
                 "image_hash": image_hash[:12],
                 "gemini_model": get_gemini_model(),
                 "groq_model": get_groq_vision_model(),
-                "feedback_style": pick_feedback_style(image_hash)["name"]
+                "feedback_style": pick_feedback_style(image_hash)["name"],
+                "pattern_count": len(TROY_PATTERN_LIBRARY)
             }
 
         save_cache(cache_key, result)
