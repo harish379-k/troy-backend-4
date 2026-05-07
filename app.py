@@ -28,30 +28,28 @@ load_dotenv(BASE_DIR / ".env")
 
 app = Flask(__name__)
 
-# Public-safe upload limit for Render
-app.config["MAX_CONTENT_LENGTH"] = 2 * 1024 * 1024  # 2 MB
+# OLD IMAGE SIZE SETTING: 4 MB upload limit
+app.config["MAX_CONTENT_LENGTH"] = 4 * 1024 * 1024
 
 CORS_ORIGINS = os.environ.get("CORS_ORIGINS", "*")
 CORS(app, origins=CORS_ORIGINS.split(","))
 
 ALLOWED_EXTENSIONS = {"png", "jpg", "jpeg", "webp"}
 
-# Render-safe image limits
-MAX_BASE64_IMAGE_SIZE = 900_000
-Image.MAX_IMAGE_PIXELS = 10_000_000
+# OLD IMAGE SIZE SETTING: 1.8 MB base64 limit
+MAX_BASE64_IMAGE_SIZE = 1_800_000
 
-# Cache repeated uploads
+Image.MAX_IMAGE_PIXELS = 15_000_000
+
 analysis_cache = OrderedDict()
 MAX_CACHE_ITEMS = 12
 
 sessions = {}
 
-# Simple public rate limiter
 ip_usage = {}
 UPLOAD_LIMIT_PER_IP_PER_DAY = int(os.environ.get("UPLOAD_LIMIT_PER_IP_PER_DAY", "25"))
 UPLOAD_COOLDOWN_SECONDS = int(os.environ.get("UPLOAD_COOLDOWN_SECONDS", "10"))
 
-# If Gemini hits quota, skip Gemini temporarily and use Groq directly
 gemini_disabled_until = 0
 GEMINI_COOLDOWN_SECONDS = int(os.environ.get("GEMINI_COOLDOWN_SECONDS", "7200"))
 
@@ -361,7 +359,7 @@ print("Provider order:", get_provider_order())
 @app.errorhandler(RequestEntityTooLarge)
 def handle_large_file(error):
     return jsonify({
-        "error": "Image is too large. Please upload an image below 2 MB."
+        "error": "Image is too large. Please upload an image below 4 MB."
     }), 413
 
 
@@ -475,8 +473,10 @@ def is_temporary_error(error_text):
 
 def get_client_ip():
     forwarded = request.headers.get("X-Forwarded-For", "")
+
     if forwarded:
         return forwarded.split(",")[0].strip()
+
     return request.remote_addr or "unknown"
 
 
@@ -527,9 +527,10 @@ def prepare_image_for_models(image_file):
     if img.mode != "RGB":
         img = img.convert("RGB")
 
-    img.thumbnail((650, 650))
+    # OLD IMAGE SIZE SETTING: 900x900
+    img.thumbnail((900, 900))
 
-    for quality in [75, 65, 55, 45, 35]:
+    for quality in [80, 70, 60, 50, 40]:
         raw_bytes, encoded = encode_image_to_base64_jpeg(img, quality)
 
         if len(encoded.encode("utf-8")) <= MAX_BASE64_IMAGE_SIZE:
@@ -537,9 +538,10 @@ def prepare_image_for_models(image_file):
             data_url = f"data:image/jpeg;base64,{encoded}"
             return encoded, data_url, image_hash
 
-    img.thumbnail((500, 500))
+    # OLD IMAGE SIZE SETTING: fallback 700x700
+    img.thumbnail((700, 700))
 
-    for quality in [55, 45, 35, 30]:
+    for quality in [60, 50, 40, 35]:
         raw_bytes, encoded = encode_image_to_base64_jpeg(img, quality)
 
         if len(encoded.encode("utf-8")) <= MAX_BASE64_IMAGE_SIZE:
@@ -547,7 +549,9 @@ def prepare_image_for_models(image_file):
             data_url = f"data:image/jpeg;base64,{encoded}"
             return encoded, data_url, image_hash
 
-    raise ValueError("Image is too large even after compression. Please upload a smaller image.")
+    raise ValueError(
+        "Image is too large even after compression. Please upload a smaller image."
+    )
 
 
 # =========================================================
@@ -1059,6 +1063,7 @@ def find_pattern_by_id(pattern_id):
     for pattern in TROY_PATTERN_LIBRARY:
         if pattern["id"] == pattern_id:
             return pattern
+
     return None
 
 
@@ -1473,7 +1478,9 @@ def health():
         "provider_order": get_provider_order(),
         "pattern_count": len(TROY_PATTERN_LIBRARY),
         "book_match_threshold": BOOK_MATCH_THRESHOLD,
-        "cache_items": len(analysis_cache)
+        "cache_items": len(analysis_cache),
+        "upload_limit_per_ip_per_day": UPLOAD_LIMIT_PER_IP_PER_DAY,
+        "upload_cooldown_seconds": UPLOAD_COOLDOWN_SECONDS
     })
 
 
