@@ -1,4 +1,5 @@
 import os
+import re
 import json
 import uuid
 import time
@@ -28,17 +29,16 @@ load_dotenv(BASE_DIR / ".env")
 
 app = Flask(__name__)
 
-# OLD IMAGE SIZE SETTING: 4 MB upload limit
-app.config["MAX_CONTENT_LENGTH"] = 4 * 1024 * 1024
+# Old image-size setting
+app.config["MAX_CONTENT_LENGTH"] = 4 * 1024 * 1024  # 4 MB
 
 CORS_ORIGINS = os.environ.get("CORS_ORIGINS", "*")
 CORS(app, origins=CORS_ORIGINS.split(","))
 
 ALLOWED_EXTENSIONS = {"png", "jpg", "jpeg", "webp"}
 
-# OLD IMAGE SIZE SETTING: 1.8 MB base64 limit
+# Old image-size setting
 MAX_BASE64_IMAGE_SIZE = 1_800_000
-
 Image.MAX_IMAGE_PIXELS = 15_000_000
 
 analysis_cache = OrderedDict()
@@ -49,9 +49,6 @@ sessions = {}
 ip_usage = {}
 UPLOAD_LIMIT_PER_IP_PER_DAY = int(os.environ.get("UPLOAD_LIMIT_PER_IP_PER_DAY", "25"))
 UPLOAD_COOLDOWN_SECONDS = int(os.environ.get("UPLOAD_COOLDOWN_SECONDS", "10"))
-
-gemini_disabled_until = 0
-GEMINI_COOLDOWN_SECONDS = int(os.environ.get("GEMINI_COOLDOWN_SECONDS", "7200"))
 
 
 # =========================================================
@@ -342,7 +339,8 @@ def get_groq_text_model():
 
 
 def get_provider_order():
-    return os.environ.get("PROVIDER_ORDER", "gemini_then_groq").strip().lower()
+    # Public/free setup: Groq first is safer because Gemini free quota is low
+    return os.environ.get("PROVIDER_ORDER", "groq_first").strip().lower()
 
 
 print("Gemini key:", "FOUND" if get_gemini_api_key() else "NOT FOUND")
@@ -419,6 +417,7 @@ def extract_json_block(text):
 
     if text.startswith("```"):
         lines = text.splitlines()
+
         if len(lines) >= 3:
             text = "\n".join(lines[1:-1]).strip()
 
@@ -438,6 +437,7 @@ def parse_json_response(text):
 
 def is_rate_limit_error(error_text):
     lower = error_text.lower()
+
     return (
         "429" in lower
         or "rate limit" in lower
@@ -449,6 +449,7 @@ def is_rate_limit_error(error_text):
 
 def is_invalid_key_error(error_text):
     lower = error_text.lower()
+
     return (
         "401" in lower
         or "403" in lower
@@ -461,6 +462,7 @@ def is_invalid_key_error(error_text):
 
 def is_temporary_error(error_text):
     lower = error_text.lower()
+
     return (
         "500" in lower
         or "502" in lower
@@ -508,6 +510,78 @@ def check_rate_limit():
     return True, ""
 
 
+def is_unclear_text(text):
+    lower = clean_text(text).lower()
+
+    unclear_phrases = [
+        "not clear",
+        "unclear",
+        "couldn't clearly",
+        "could not clearly",
+        "cannot clearly",
+        "can't clearly",
+        "unable to clearly",
+        "too blurry",
+        "too dark",
+        "not enough visible",
+        "not enough detail",
+        "not clearly visible",
+        "couldn’t clearly"
+    ]
+
+    return any(phrase in lower for phrase in unclear_phrases)
+
+
+def remove_page_words(text):
+    text = clean_text(text)
+
+    for number in range(1, 31):
+        text = text.replace(f"page {number}", "the pattern reference")
+        text = text.replace(f"Page {number}", "the pattern reference")
+
+    replacements = {
+        "from page": "from the pattern reference",
+        "on page": "in the pattern reference",
+        "book page": "pattern reference",
+        "page number": "pattern reference"
+    }
+
+    for old, new in replacements.items():
+        text = text.replace(old, new)
+
+    return clean_text(text)
+
+
+def clean_build_title(title, fallback="Open-ended Troy block arrangement"):
+    """
+    Removes awkward titles like:
+    - Aeroplane Style Build -> Aeroplane
+    - Pickup Truck Style Build -> Pickup Truck
+    - Temple Block Build -> Temple
+    """
+    text = remove_page_words(clean_text(title, fallback))
+
+    bad_suffix_patterns = [
+        r"\s+style\s+build$",
+        r"\s+style\s+structure$",
+        r"\s+style\s+model$",
+        r"\s+style$",
+        r"\s+troy\s+block\s+build$",
+        r"\s+block\s+build$",
+        r"\s+build$"
+    ]
+
+    for pattern in bad_suffix_patterns:
+        text = re.sub(pattern, "", text, flags=re.IGNORECASE).strip()
+
+    text = re.sub(r"\s+", " ", text).strip()
+
+    if not text:
+        text = fallback
+
+    return text
+
+
 # =========================================================
 # Image processing
 # =========================================================
@@ -527,7 +601,7 @@ def prepare_image_for_models(image_file):
     if img.mode != "RGB":
         img = img.convert("RGB")
 
-    # OLD IMAGE SIZE SETTING: 900x900
+    # Old image-size setting
     img.thumbnail((900, 900))
 
     for quality in [80, 70, 60, 50, 40]:
@@ -538,7 +612,7 @@ def prepare_image_for_models(image_file):
             data_url = f"data:image/jpeg;base64,{encoded}"
             return encoded, data_url, image_hash
 
-    # OLD IMAGE SIZE SETTING: fallback 700x700
+    # Old fallback image-size setting
     img.thumbnail((700, 700))
 
     for quality in [60, 50, 40, 35]:
@@ -648,11 +722,14 @@ Do not force random builds into the pattern list.
 Known Troy patterns:
 {pattern_library}
 
-Important display rule:
+Important display rules:
 - Never mention page numbers.
 - Do not say "page", "book page", or "from page".
-- If a known pattern matches, simply say it looks like the named pattern.
-- If no strong match exists, do normal creative analysis.
+- Do not use titles like "Aeroplane Style Build", "Temple Style Build", or "Truck Style Build".
+- If the guess is an aeroplane, title should be "Aeroplane".
+- If the guess is a pickup truck, title should be "Pickup Truck".
+- If the guess is a temple, title should be "Temple".
+- Do not add "Style Build" to the title.
 
 Pattern matching rules:
 - Use the known pattern only when the uploaded build has the same main structure and visible cues.
@@ -680,7 +757,9 @@ General analysis rules:
 - Base every sentence only on visible details.
 - Mention visible parts such as base, floors, levels, gaps, supports, repeated blocks, stacked sections, roof-like pieces, wheel-like parts, curved pieces, openings, paths, bridges, rooms, platforms, loose blocks, or upper/lower sections if visible.
 - If the image is not a Troy/block build, mark it invalid.
-- If unsure, use cautious phrases like "looks like", "could be", or "seems to".
+- If the image is unclear, mark it invalid and do not give normal learning feedback.
+- If invalid, do not say the child built a specific object.
+- If unsure but still visible, use cautious phrases like "looks like", "could be", or "seems to".
 - Keep the tone simple, warm, parent-friendly, and encouraging.
 - Return JSON only.
 
@@ -706,7 +785,7 @@ Return this exact JSON shape:
     "whyMatched": "short visual reason or null"
   }},
   "buildGuess": {{
-    "title": "creative but realistic build guess",
+    "title": "short object name only, without Style Build",
     "subtitle": "short reason based on visible image details"
   }},
   "whatWeFound": {{
@@ -753,6 +832,8 @@ Invalid image rules:
 - confidenceScore must be below 65
 - matchedPattern must contain null values
 - whatTheyLearned must be []
+- buildGuess title must be "We couldn’t clearly analyze this image"
+- Do not guess a specific object if invalid
 """
 
 
@@ -763,26 +844,6 @@ Invalid image rules:
 def contains_any(text, words):
     text = text.lower()
     return any(word in text for word in words)
-
-
-def remove_page_words(text):
-    text = clean_text(text)
-
-    for number in range(1, 31):
-        text = text.replace(f"page {number}", "the pattern reference")
-        text = text.replace(f"Page {number}", "the pattern reference")
-
-    replacements = {
-        "from page": "from the pattern reference",
-        "on page": "in the pattern reference",
-        "book page": "pattern reference",
-        "page number": "pattern reference"
-    }
-
-    for old, new in replacements.items():
-        text = text.replace(old, new)
-
-    return clean_text(text)
 
 
 def build_context_text(build_guess, summary, noticed, matched_pattern=None):
@@ -843,7 +904,7 @@ def creative_fallback_cards(build_guess, summary, noticed, image_hash, matched_p
             }
         ])
 
-    if contains_any(context, ["wheel", "vehicle", "moving", "car", "base", "travel", "rolling", "truck", "train", "ship"]):
+    if contains_any(context, ["wheel", "vehicle", "moving", "car", "base", "travel", "rolling", "truck", "train", "ship", "aeroplane", "airplane", "plane"]):
         card_pool.extend([
             {
                 "title": "Moving Base Idea",
@@ -852,12 +913,12 @@ def creative_fallback_cards(build_guess, summary, noticed, image_hash, matched_p
             },
             {
                 "title": "Vehicle Shape Thinking",
-                "description": "The child explored how a block base can become something that looks ready to move.",
+                "description": "The child explored how block placement can suggest something ready to move.",
                 "color": "green"
             },
             {
                 "title": "Parts Working Together",
-                "description": "The child practiced combining a base and upper section into one complete build idea.",
+                "description": "The child practiced combining different sections into one complete moving-object idea.",
                 "color": "blue"
             }
         ])
@@ -1158,6 +1219,46 @@ def normalize_learning_cards(cards, build_guess, summary, noticed, image_hash, m
     return cleaned[:3]
 
 
+def build_invalid_response(summary=None):
+    reason = clean_text(
+        summary,
+        "The image is not clear enough to confidently analyze the Troy block build."
+    )
+
+    return {
+        "status": "success",
+        "imageStatus": "invalid",
+        "confidenceScore": 0,
+        "matchType": "invalid",
+        "matchedPattern": None,
+        "buildGuess": {
+            "title": "We couldn’t clearly analyze this image",
+            "subtitle": reason
+        },
+        "whatWeFound": {
+            "title": "What we found",
+            "summary": reason
+        },
+        "whatTheyLearned": [],
+        "whatWeNoticed": [
+            "The build is not clear enough in the photo.",
+            "Some important parts may be blurry, cropped, too far away, or hidden.",
+            "A clearer photo will help the analyzer give more accurate feedback."
+        ],
+        "suggestionsForParent": [
+            "Retake the photo with the full build visible.",
+            "Use better lighting and place the build on a plain surface.",
+            "Take the photo closer, but make sure the entire structure is inside the frame."
+        ],
+        "nextBuildIdeas": [
+            "Try taking one front-view photo of the same build.",
+            "Ask your child to point out the main part of the build before retaking the photo.",
+            "Try rebuilding the structure and taking a clearer photo."
+        ],
+        "session_id": str(uuid.uuid4())
+    }
+
+
 def normalize_analysis_response(parsed, image_hash):
     image_status = clean_text(parsed.get("imageStatus", "invalid")).lower()
 
@@ -1166,12 +1267,28 @@ def normalize_analysis_response(parsed, image_hash):
     except Exception:
         confidence = 0
 
+    build_guess = safe_get_dict(parsed, "buildGuess")
+    what_found = safe_get_dict(parsed, "whatWeFound")
+
+    raw_title = clean_text(build_guess.get("title"))
+    raw_subtitle = clean_text(build_guess.get("subtitle"))
+    raw_summary = clean_text(what_found.get("summary"))
+
+    combined_main_text = " ".join([raw_title, raw_subtitle, raw_summary])
+
+    # Main contradiction fix:
+    # If AI says unclear/not clear, do NOT continue with normal feedback.
+    if (
+        image_status != "valid"
+        or confidence < 65
+        or is_unclear_text(combined_main_text)
+    ):
+        return build_invalid_response(raw_summary or raw_subtitle)
+
     raw_match_type = clean_text(parsed.get("matchType", "creative_guess")).lower()
     raw_matched_pattern = parsed.get("matchedPattern")
 
-    if image_status == "invalid":
-        final_match_type = "invalid"
-    elif raw_match_type == "book_pattern":
+    if raw_match_type == "book_pattern":
         final_match_type = "book_pattern"
     else:
         final_match_type = "creative_guess"
@@ -1180,9 +1297,6 @@ def normalize_analysis_response(parsed, image_hash):
 
     if not matched_pattern and final_match_type == "book_pattern":
         final_match_type = "creative_guess"
-
-    build_guess = safe_get_dict(parsed, "buildGuess")
-    what_found = safe_get_dict(parsed, "whatWeFound")
 
     noticed = ensure_list(
         parsed.get("whatWeNoticed"),
@@ -1197,37 +1311,37 @@ def normalize_analysis_response(parsed, image_hash):
     noticed = [remove_page_words(item) for item in noticed]
 
     if matched_pattern:
-        default_title = f"{matched_pattern['name']} Style Build"
+        default_title = matched_pattern["name"]
         default_subtitle = (
-            f"This looks like the {matched_pattern['name']} pattern because "
+            f"This looks like the {matched_pattern['name']} because "
             f"{matched_pattern['whyMatched']}."
         )
     else:
-        default_title = "Open-ended Troy block build"
+        default_title = "Open-ended Troy block arrangement"
         default_subtitle = "The child created a visible structure using blocks."
 
     normalized_build_guess = {
-        "title": remove_page_words(clean_text(build_guess.get("title"), default_title)),
-        "subtitle": remove_page_words(clean_text(build_guess.get("subtitle"), default_subtitle))
+        "title": clean_build_title(raw_title, default_title),
+        "subtitle": remove_page_words(clean_text(raw_subtitle, default_subtitle))
     }
 
     if matched_pattern:
-        normalized_build_guess["title"] = f"{matched_pattern['name']} Style Build"
+        normalized_build_guess["title"] = clean_build_title(matched_pattern["name"])
         normalized_build_guess["subtitle"] = (
-            f"This looks like the {matched_pattern['name']} pattern because "
+            f"This looks like the {matched_pattern['name']} because "
             f"{matched_pattern['whyMatched']}."
         )
 
     normalized_summary = remove_page_words(
         clean_text(
-            what_found.get("summary"),
+            raw_summary,
             "The image shows a child-made block structure with visible block placement."
         )
     )
 
     result = {
         "status": "success",
-        "imageStatus": "valid" if image_status == "valid" and confidence >= 65 else "invalid",
+        "imageStatus": "valid",
         "confidenceScore": confidence,
         "matchType": final_match_type,
         "matchedPattern": matched_pattern,
@@ -1269,15 +1383,6 @@ def normalize_analysis_response(parsed, image_hash):
         ],
         "session_id": str(uuid.uuid4())
     }
-
-    if result["imageStatus"] == "invalid":
-        result["matchType"] = "invalid"
-        result["matchedPattern"] = None
-        result["whatTheyLearned"] = []
-        result["buildGuess"] = {
-            "title": "We couldn’t clearly analyze this image",
-            "subtitle": result["whatWeFound"]["summary"]
-        }
 
     return result
 
@@ -1391,25 +1496,33 @@ def analyze_with_groq_rest(image_data_url, age, image_hash):
 # Main fallback logic
 # =========================================================
 
-def should_try_gemini():
-    return bool(get_gemini_api_key()) and time.time() >= gemini_disabled_until
-
-
 def analyze_image_with_fallback(image_base64, image_data_url, age, image_hash):
-    global gemini_disabled_until
-
     errors = []
     provider_order = get_provider_order()
 
-    if provider_order == "groq_first":
-        providers = ["groq", "gemini"]
-    else:
+    if provider_order == "gemini_then_groq":
         providers = ["gemini", "groq"]
+    else:
+        providers = ["groq", "gemini"]
 
     for provider in providers:
+        if provider == "groq":
+            try:
+                print("Trying Groq...")
+                parsed = analyze_with_groq_rest(image_data_url, age, image_hash)
+                result = normalize_analysis_response(parsed, image_hash)
+                result["provider"] = "groq"
+                print("Groq successful")
+                return result
+
+            except Exception as e:
+                error_text = str(e)
+                print("Groq failed:", error_text)
+                errors.append(f"Groq: {error_text}")
+
         if provider == "gemini":
-            if not should_try_gemini():
-                print("Skipping Gemini because it is in cooldown or key is missing")
+            if not get_gemini_api_key():
+                print("Skipping Gemini because key is missing")
                 continue
 
             try:
@@ -1424,24 +1537,6 @@ def analyze_image_with_fallback(image_base64, image_data_url, age, image_hash):
                 error_text = str(e)
                 print("Gemini failed:", error_text)
                 errors.append(f"Gemini: {error_text}")
-
-                if is_rate_limit_error(error_text):
-                    gemini_disabled_until = time.time() + GEMINI_COOLDOWN_SECONDS
-                    print(f"Gemini quota/rate limit hit. Cooldown for {GEMINI_COOLDOWN_SECONDS} seconds.")
-
-        if provider == "groq":
-            try:
-                print("Trying Groq...")
-                parsed = analyze_with_groq_rest(image_data_url, age, image_hash)
-                result = normalize_analysis_response(parsed, image_hash)
-                result["provider"] = "groq"
-                print("Groq successful")
-                return result
-
-            except Exception as e:
-                error_text = str(e)
-                print("Groq failed:", error_text)
-                errors.append(f"Groq: {error_text}")
 
     raise RuntimeError("All AI providers failed. " + " | ".join(errors))
 
@@ -1472,7 +1567,6 @@ def health():
         "status": "ok",
         "gemini_key_loaded": bool(get_gemini_api_key()),
         "gemini_model": get_gemini_model(),
-        "gemini_in_cooldown": time.time() < gemini_disabled_until,
         "groq_key_loaded": bool(get_groq_api_key()),
         "groq_vision_model": get_groq_vision_model(),
         "provider_order": get_provider_order(),
@@ -1611,6 +1705,7 @@ Answer in a short, warm, creative but realistic way.
 Use only the build details provided.
 Do not invent hidden abilities or unseen parts.
 Do not mention page numbers.
+Do not use titles like Style Build.
 Keep it to 3 to 5 short lines.
 """
 
