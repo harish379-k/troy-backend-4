@@ -50,19 +50,23 @@ ip_usage = {}
 UPLOAD_LIMIT_PER_IP_PER_DAY = int(os.environ.get("UPLOAD_LIMIT_PER_IP_PER_DAY", "25"))
 UPLOAD_COOLDOWN_SECONDS = int(os.environ.get("UPLOAD_COOLDOWN_SECONDS", "10"))
 
+# Set true only if you want extra accuracy.
+# It uses more free API quota because Gemini may be called after Groq returns invalid.
+SECOND_OPINION_ON_INVALID = os.environ.get("SECOND_OPINION_ON_INVALID", "false").lower() == "true"
+
 
 # =========================================================
 # Strictness settings
 # =========================================================
 
-# Book match must be very strong.
-BOOK_MATCH_THRESHOLD = 94
+# Very strict pattern matching.
+BOOK_MATCH_THRESHOLD = 93
 
-# Normal creative analysis must also be strong.
-VALID_CONFIDENCE_THRESHOLD = 82
+# Creative guess must still be confident.
+VALID_CONFIDENCE_THRESHOLD = 78
 
-# If AI gives a weak confidence below this, force invalid.
-ABSOLUTE_MIN_CONFIDENCE = 75
+# Below this, always invalid.
+ABSOLUTE_MIN_CONFIDENCE = 70
 
 
 # =========================================================
@@ -359,6 +363,7 @@ print("Gemini model:", get_gemini_model())
 print("Groq key:", "FOUND" if get_groq_api_key() else "NOT FOUND")
 print("Groq vision model:", get_groq_vision_model())
 print("Provider order:", get_provider_order())
+print("Second opinion on invalid:", SECOND_OPINION_ON_INVALID)
 
 
 # =========================================================
@@ -566,8 +571,6 @@ def is_weak_guess_text(text):
     lower = clean_text(text).lower()
 
     weak_guess_phrases = [
-        "could be",
-        "might be",
         "maybe",
         "possibly",
         "perhaps",
@@ -611,7 +614,7 @@ def remove_page_words(text):
     return clean_text(text)
 
 
-def clean_build_title(title, fallback="Troy Block Build"):
+def clean_build_title(title, fallback="Troy Block Creation"):
     text = remove_page_words(clean_text(title, fallback))
 
     bad_suffix_patterns = [
@@ -696,39 +699,6 @@ def prepare_image_for_models(image_file):
 # Prompt
 # =========================================================
 
-def pick_feedback_style(image_hash):
-    styles = [
-        {
-            "name": "strict-pattern-checker",
-            "instruction": "First check if the build exactly matches a known Troy pattern. If not, analyze only with strong visible evidence."
-        },
-        {
-            "name": "strict-builder",
-            "instruction": "Focus only on visible supports, levels, blocks, openings, wheels, curves, and layout."
-        },
-        {
-            "name": "strict-designer",
-            "instruction": "Reject vague guesses. Use only clear shape and arrangement evidence."
-        }
-    ]
-
-    seed_number = int(image_hash[:8], 16)
-    return styles[seed_number % len(styles)]
-
-
-def build_unique_hint(image_hash):
-    hints = [
-        "Use strict evidence-based wording.",
-        "Reject weak guesses.",
-        "Do not invent hidden details.",
-        "Use the book pattern name exactly if it is a strong match.",
-        "Do not add Style Build to any title."
-    ]
-
-    seed_number = int(image_hash[8:16], 16)
-    return hints[seed_number % len(hints)]
-
-
 def compact_pattern_library_text():
     lines = []
 
@@ -743,12 +713,10 @@ def compact_pattern_library_text():
 
 
 def build_troy_prompt(age, image_hash):
-    style = pick_feedback_style(image_hash)
-    unique_hint = build_unique_hint(image_hash)
     pattern_library = compact_pattern_library_text()
 
     return f"""
-You are Troy AI Analyzer in STRICT MODE.
+You are Troy AI Analyzer.
 
 You are analyzing one uploaded image of a child's Troy wooden-block build.
 
@@ -758,79 +726,67 @@ Child age:
 Known Troy pattern reference list:
 {pattern_library}
 
-STRICT MODE RULES:
-You must be extremely strict.
+Your job:
+1. First check whether the image clearly matches a known Troy pattern.
+2. If it exactly matches, use the known pattern name exactly.
+3. If it does not exactly match, analyze the build creatively using only visible evidence.
+4. If the image is unclear or the evidence is weak, mark it invalid.
 
-Mark imageStatus as "invalid" if:
-- Troy blocks are not clearly visible
-- the build is blurry, cropped, too far, dark, partially hidden, or low quality
-- the object cannot be identified with strong visible evidence
-- the build takes up only a small part of the photo
-- the photo mostly shows people, floor, hands, furniture, background, or random objects
-- you are guessing mainly from imagination instead of visible block structure
-- you would need to say "maybe", "possibly", "might be", "could be", "hard to tell", or "unclear"
-- you cannot identify at least 2 visible construction features such as base, supports, levels, wheels, openings, bridge span, roof, symmetry, repeated blocks, or curved pieces
-
-If invalid:
-- imageStatus must be "invalid"
-- confidenceScore must be below 75
-- matchType must be "invalid"
-- matchedPattern must contain null values
-- buildGuess title must be exactly "We couldn’t clearly analyze this image"
-- do not guess a specific object
-- whatTheyLearned must be []
-- give only photo-retake suggestions
-
-PATTERN MATCHING RULES:
-If the uploaded image strongly matches a known Troy pattern:
+STRICT BOOK MATCH RULE:
+If the uploaded build is the same as a known pattern:
 - matchType must be "book_pattern"
-- matchConfidence must be 94 or above
+- matchConfidence must be 93 or above
 - matchedPattern.id must exactly match the known pattern id
 - matchedPattern.name must exactly match the known pattern name
 - buildGuess.title must exactly equal the known pattern name
 - do not rename it
-- do not say "Style Build"
-- do not say "looks like a variation"
-- do not make a creative alternative name
-- do not say page number
+- do not add "Style Build"
+- do not create a new creative name
+- do not mention page numbers
 
-A book pattern match needs:
-- same overall shape
+A book match needs:
+- same overall silhouette
 - same main block arrangement
-- at least 3 matching visual cues from the reference list
+- at least 3 matching visible cues from the known pattern
 - strong visible evidence
 
-If the child’s build shares only one or two small features with a known pattern:
+If it shares only one or two small features with a known pattern:
 - do not call it a book pattern
-- use creative_guess only if the build is still clearly visible and confidence is 82 or above
+- use creative_guess only if the build is still clearly visible
 
-CREATIVE GUESS RULES:
-If it does not strongly match the book:
+CREATIVE GUESS RULE:
+If it does not match the book:
 - matchType must be "creative_guess"
 - matchedPattern must be null
-- confidenceScore must be 82 or above
-- title must be a short object name only
-- do not use vague names like "Open-ended Troy Block Build", "Abstract Structure", or "Block Arrangement"
-- do not use "Style Build", "Build", "Model", or "Structure" at the end of the title
-- no guessing if evidence is weak
+- confidenceScore must be 78 or above
+- buildGuess.title must be a short object name only
+- no "Style Build"
+- no "Build", "Model", or "Structure" suffix
+- do not use vague names like "Abstract Structure" or "Open-ended Troy Block Build"
+- give the best accurate guess based on visible features
 
-Important display rules:
+INVALID RULE:
+Mark imageStatus as "invalid" if:
+- Troy blocks are not clearly visible
+- the photo is blurry, dark, cropped, too far, partially hidden, or low quality
+- the build takes up only a small part of the image
+- there is not enough visible evidence for a strong guess
+- you would need to say maybe, possibly, perhaps, hard to tell, unclear, or not sure
+- fewer than 2 visible construction features can be identified
+
+Visible construction features include:
+base, supports, wheels/cylinders, levels/floors, bridge span, arch/opening, roof-like top, repeated blocks, symmetry, curved pieces, long body, cabin, tower, ramp, path, platform.
+
+Important wording rules:
 - Never mention page numbers.
 - Do not say "page", "book page", or "from page".
-- Do not add "Style Build" to any title.
-- Use exact book name when matched.
+- Do not use "Style Build".
 - If the guess is Aeroplane, title should be exactly "Aeroplane".
 - If the guess is Pickup Truck, title should be exactly "Pickup Truck".
 - If the guess is Temple, title should be exactly "Temple".
 
-Feedback style:
-{style["name"]} — {style["instruction"]}
-
-Uniqueness instruction:
-{unique_hint}
-
 Learning feedback rules:
-- Every learning card must be based on visible details.
+- Every learning card must mention visible details.
 - Do not use generic titles.
 - Do not use: Creativity, Problem-Solving, Problem Solving, Spatial Awareness, Spatial Thinking, Imagination, Motor Skills, Fine Motor Skills, Engineering, STEM Learning, Critical Thinking.
 - Use specific titles like: Layer Planning, Bridge Support, Moving Base Idea, Roof Shape Experiment, Open-Space Design, Block Pattern Play, Careful Stacking, Shape Combining, Build-and-Tell Practice, Support Below Space Above, Vehicle Shape Thinking, Room-Making, Testing What Holds.
@@ -890,6 +846,14 @@ Return JSON only in this exact shape:
     "specific next build idea related to this build"
   ]
 }}
+
+Invalid output rules:
+- imageStatus must be "invalid"
+- confidenceScore must be below 70
+- matchType must be "invalid"
+- matchedPattern must contain null values
+- buildGuess.title must be exactly "We couldn’t clearly analyze this image"
+- whatTheyLearned must be []
 """
 
 
@@ -927,36 +891,17 @@ def creative_fallback_cards(build_guess, summary, noticed, image_hash, matched_p
 
     card_pool = []
 
-    if contains_any(context, ["rocking", "rocker", "curved rail", "chair"]):
-        card_pool.extend([
-            {
-                "title": "Motion Design",
-                "description": "The child explored how curved base pieces can make a build feel like it could rock or move.",
-                "color": "cream"
-            },
-            {
-                "title": "Seat-and-Back Planning",
-                "description": "The build encourages thinking about how a seat and backrest can work together.",
-                "color": "green"
-            }
-        ])
-
     if contains_any(context, ["level", "floor", "platform", "layer", "upper", "lower", "multi-level"]):
         card_pool.extend([
             {
-                "title": "Upper-Level Building",
+                "title": "Layer Planning",
                 "description": f"The child explored how one section can sit above another, especially around {main_detail}.",
                 "color": "cream"
             },
             {
-                "title": "Layer Planning",
-                "description": "The child practiced making a build with lower and upper parts instead of one simple stack.",
-                "color": "green"
-            },
-            {
                 "title": "Support Below Space Above",
-                "description": "The build encourages the child to think about how bottom blocks can hold up higher sections.",
-                "color": "blue"
+                "description": "The child practiced thinking about how lower blocks can support upper parts.",
+                "color": "green"
             }
         ])
 
@@ -964,37 +909,27 @@ def creative_fallback_cards(build_guess, summary, noticed, image_hash, matched_p
         card_pool.extend([
             {
                 "title": "Moving Base Idea",
-                "description": "The child connected the bottom part of the build with the idea of movement or travel.",
+                "description": "The child connected the block arrangement with the idea of movement or travel.",
                 "color": "cream"
             },
             {
                 "title": "Vehicle Shape Thinking",
-                "description": "The child explored how block placement can suggest something ready to move.",
+                "description": "The child used visible parts like a base, body, or direction to suggest a moving object.",
                 "color": "green"
-            },
-            {
-                "title": "Parts Working Together",
-                "description": "The child practiced combining different sections into one complete moving-object idea.",
-                "color": "blue"
             }
         ])
 
     if contains_any(context, ["house", "home", "room", "roof", "door", "window", "shelter"]):
         card_pool.extend([
             {
-                "title": "Tiny Home Story",
-                "description": "The child used blocks to suggest a small home-like space that can become part of a story.",
+                "title": "Room-Making",
+                "description": "The child used blocks to suggest an inside-outside space or small shelter.",
                 "color": "cream"
             },
             {
                 "title": "Roof Shape Experiment",
-                "description": "The child explored how top pieces can make a build feel like a room, roof, or shelter.",
+                "description": "The top section helps the child explore how a build can feel like a roof or room.",
                 "color": "green"
-            },
-            {
-                "title": "Room-Making",
-                "description": "The build helps the child think about inside and outside spaces using simple blocks.",
-                "color": "blue"
             }
         ])
 
@@ -1002,37 +937,27 @@ def creative_fallback_cards(build_guess, summary, noticed, image_hash, matched_p
         card_pool.extend([
             {
                 "title": "Bridge Support",
-                "description": "The child explored how blocks can stretch across a gap while still needing support.",
+                "description": "The child explored how blocks can stretch across a space while still needing support.",
                 "color": "cream"
-            },
-            {
-                "title": "Across-and-Over Thinking",
-                "description": "The build helps the child notice how one part can connect two separate sides.",
-                "color": "green"
             },
             {
                 "title": "Testing What Holds",
-                "description": "The child can learn which blocks keep the bridge-like part steady and which parts wobble.",
-                "color": "blue"
+                "description": "The bridge-like arrangement helps the child notice which parts stay steady.",
+                "color": "green"
             }
         ])
 
-    if contains_any(context, ["gate", "arch", "opening", "entrance", "tunnel", "curve", "india gate", "shinto"]):
+    if contains_any(context, ["gate", "arch", "opening", "entrance", "tunnel", "curve"]):
         card_pool.extend([
             {
                 "title": "Open-Space Design",
-                "description": "The child explored how blocks can make an entrance, tunnel, or pass-through space.",
+                "description": "The child explored how blocks can create an entrance, opening, or pass-through space.",
                 "color": "cream"
             },
             {
-                "title": "Entrance Building",
-                "description": "The build invites the child to think about where something could go in or come out.",
-                "color": "green"
-            },
-            {
                 "title": "Curve and Shape Play",
-                "description": "The child experimented with how curved or open shapes can change the build’s meaning.",
-                "color": "blue"
+                "description": "The child experimented with how curved or open shapes change the build.",
+                "color": "green"
             }
         ])
 
@@ -1040,18 +965,13 @@ def creative_fallback_cards(build_guess, summary, noticed, image_hash, matched_p
         card_pool.extend([
             {
                 "title": "Block Pattern Play",
-                "description": "The child used repeated placement to make parts of the build feel organized.",
+                "description": "The child used repeated placement to make the build feel organized.",
                 "color": "cream"
             },
             {
                 "title": "Matching and Repeating",
-                "description": "The child practiced noticing which blocks look similar and how they can be placed together.",
+                "description": "The child practiced noticing which blocks look similar and placing them together.",
                 "color": "green"
-            },
-            {
-                "title": "Visual Order",
-                "description": "The repeated blocks help the child explore spacing, direction, and arrangement.",
-                "color": "blue"
             }
         ])
 
@@ -1064,13 +984,8 @@ def creative_fallback_cards(build_guess, summary, noticed, image_hash, matched_p
             },
             {
                 "title": "Height Control",
-                "description": "The child explored how a build changes when blocks are placed higher and higher.",
+                "description": "The child explored how a build changes when blocks are placed higher.",
                 "color": "green"
-            },
-            {
-                "title": "Steady Hands",
-                "description": "The child practiced careful hand movement while adding blocks without knocking the build down.",
-                "color": "blue"
             }
         ])
 
@@ -1096,11 +1011,6 @@ def creative_fallback_cards(build_guess, summary, noticed, image_hash, matched_p
             "title": "Build-and-Tell Practice",
             "description": "The structure gives the child something they can explain, rename, and turn into a story.",
             "color": "blue"
-        },
-        {
-            "title": "Above-Below Thinking",
-            "description": "The child practiced noticing which parts are above, below, beside, or connected to other parts.",
-            "color": "cream"
         }
     ])
 
@@ -1203,7 +1113,6 @@ def normalize_matched_pattern(raw_matched_pattern, match_type):
 
     pattern_id = clean_text(raw_matched_pattern.get("id"))
     pattern_name = clean_text(raw_matched_pattern.get("name"))
-    category = clean_text(raw_matched_pattern.get("category"))
     why_matched = clean_text(raw_matched_pattern.get("whyMatched"))
 
     try:
@@ -1342,8 +1251,8 @@ def normalize_analysis_response(parsed, image_hash):
     what_found = safe_get_dict(parsed, "whatWeFound")
 
     raw_title = clean_text(build_guess.get("title"))
-    raw_subtitle = clean_text(build_guess.get("subtitle"))
-    raw_summary = clean_text(what_found.get("summary"))
+    raw_subtitle = remove_page_words(clean_text(build_guess.get("subtitle")))
+    raw_summary = remove_page_words(clean_text(what_found.get("summary")))
 
     combined_main_text = " ".join([raw_title, raw_subtitle, raw_summary])
 
@@ -1358,11 +1267,7 @@ def normalize_analysis_response(parsed, image_hash):
     raw_match_type = clean_text(parsed.get("matchType", "creative_guess")).lower()
     raw_matched_pattern = parsed.get("matchedPattern")
 
-    if raw_match_type == "book_pattern":
-        final_match_type = "book_pattern"
-    else:
-        final_match_type = "creative_guess"
-
+    final_match_type = "book_pattern" if raw_match_type == "book_pattern" else "creative_guess"
     matched_pattern = normalize_matched_pattern(raw_matched_pattern, final_match_type)
 
     if matched_pattern:
@@ -1389,27 +1294,25 @@ def normalize_analysis_response(parsed, image_hash):
         normalized_build_guess = {
             "title": matched_pattern["name"],
             "subtitle": (
-                f"This matches the {matched_pattern['name']} pattern because "
+                f"This matches the {matched_pattern['name']} because "
                 f"{matched_pattern['whyMatched']}."
             )
         }
     else:
         cleaned_title = clean_build_title(raw_title)
 
-        if is_weak_guess_text(cleaned_title) or len(cleaned_title.split()) > 5:
+        if is_weak_guess_text(cleaned_title):
+            return build_invalid_response(raw_summary or raw_subtitle)
+
+        if len(cleaned_title.split()) > 6:
             return build_invalid_response(raw_summary or raw_subtitle)
 
         normalized_build_guess = {
             "title": cleaned_title,
-            "subtitle": remove_page_words(clean_text(raw_subtitle, "The visible block arrangement supports this guess."))
+            "subtitle": raw_subtitle or "The visible block arrangement supports this guess."
         }
 
-    normalized_summary = remove_page_words(
-        clean_text(
-            raw_summary,
-            "The image shows a child-made block structure with visible block placement."
-        )
-    )
+    normalized_summary = raw_summary or "The image shows a child-made block structure with visible block placement."
 
     if is_unclear_text(normalized_summary) or is_weak_guess_text(normalized_summary):
         return build_invalid_response(normalized_summary)
@@ -1492,8 +1395,8 @@ def analyze_with_gemini_rest(image_base64, age, image_hash):
             }
         ],
         "generationConfig": {
-            "temperature": 0.25,
-            "topP": 0.75,
+            "temperature": 0.35,
+            "topP": 0.8,
             "maxOutputTokens": 1500,
             "responseMimeType": "application/json"
         }
@@ -1530,7 +1433,7 @@ def analyze_with_groq_rest(image_data_url, age, image_hash):
         "messages": [
             {
                 "role": "system",
-                "content": "You are a strict visual pattern checker. Return valid JSON only."
+                "content": "You are a strict but fair visual analyzer. Return valid JSON only."
             },
             {
                 "role": "user",
@@ -1548,8 +1451,8 @@ def analyze_with_groq_rest(image_data_url, age, image_hash):
                 ]
             }
         ],
-        "temperature": 0.25,
-        "top_p": 0.75,
+        "temperature": 0.35,
+        "top_p": 0.8,
         "max_completion_tokens": 1500,
         "response_format": {
             "type": "json_object"
@@ -1580,6 +1483,8 @@ def analyze_image_with_fallback(image_base64, image_data_url, age, image_hash):
     else:
         providers = ["groq", "gemini"]
 
+    best_invalid_result = None
+
     for provider in providers:
         if provider == "groq":
             try:
@@ -1587,6 +1492,12 @@ def analyze_image_with_fallback(image_base64, image_data_url, age, image_hash):
                 parsed = analyze_with_groq_rest(image_data_url, age, image_hash)
                 result = normalize_analysis_response(parsed, image_hash)
                 result["provider"] = "groq"
+
+                if result["imageStatus"] == "invalid" and SECOND_OPINION_ON_INVALID:
+                    print("Groq returned invalid. Trying second opinion if available...")
+                    best_invalid_result = result
+                    continue
+
                 print("Groq successful")
                 return result
 
@@ -1605,6 +1516,13 @@ def analyze_image_with_fallback(image_base64, image_data_url, age, image_hash):
                 parsed = analyze_with_gemini_rest(image_base64, age, image_hash)
                 result = normalize_analysis_response(parsed, image_hash)
                 result["provider"] = "gemini"
+
+                if result["imageStatus"] == "invalid" and SECOND_OPINION_ON_INVALID:
+                    print("Gemini also returned invalid.")
+                    if best_invalid_result is None:
+                        best_invalid_result = result
+                    continue
+
                 print("Gemini successful")
                 return result
 
@@ -1612,6 +1530,9 @@ def analyze_image_with_fallback(image_base64, image_data_url, age, image_hash):
                 error_text = str(e)
                 print("Gemini failed:", error_text)
                 errors.append(f"Gemini: {error_text}")
+
+    if best_invalid_result:
+        return best_invalid_result
 
     raise RuntimeError("All AI providers failed. " + " | ".join(errors))
 
@@ -1645,6 +1566,7 @@ def health():
         "groq_key_loaded": bool(get_groq_api_key()),
         "groq_vision_model": get_groq_vision_model(),
         "provider_order": get_provider_order(),
+        "second_opinion_on_invalid": SECOND_OPINION_ON_INVALID,
         "pattern_count": len(TROY_PATTERN_LIBRARY),
         "book_match_threshold": BOOK_MATCH_THRESHOLD,
         "valid_confidence_threshold": VALID_CONFIDENCE_THRESHOLD,
@@ -1713,7 +1635,6 @@ def analyze():
                 "image_hash": image_hash[:12],
                 "gemini_model": get_gemini_model(),
                 "groq_model": get_groq_vision_model(),
-                "feedback_style": pick_feedback_style(image_hash)["name"],
                 "pattern_count": len(TROY_PATTERN_LIBRARY),
                 "strict_mode": True
             }
