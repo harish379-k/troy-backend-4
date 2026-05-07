@@ -52,6 +52,20 @@ UPLOAD_COOLDOWN_SECONDS = int(os.environ.get("UPLOAD_COOLDOWN_SECONDS", "10"))
 
 
 # =========================================================
+# Strictness settings
+# =========================================================
+
+# Book match must be very strong.
+BOOK_MATCH_THRESHOLD = 94
+
+# Normal creative analysis must also be strong.
+VALID_CONFIDENCE_THRESHOLD = 82
+
+# If AI gives a weak confidence below this, force invalid.
+ABSOLUTE_MIN_CONFIDENCE = 75
+
+
+# =========================================================
 # Troy pattern reference library
 # =========================================================
 
@@ -305,8 +319,6 @@ TROY_PATTERN_LIBRARY = [
     }
 ]
 
-BOOK_MATCH_THRESHOLD = 78
-
 
 # =========================================================
 # Environment config
@@ -339,7 +351,6 @@ def get_groq_text_model():
 
 
 def get_provider_order():
-    # Public/free setup: Groq first is safer because Gemini free quota is low
     return os.environ.get("PROVIDER_ORDER", "groq_first").strip().lower()
 
 
@@ -417,7 +428,6 @@ def extract_json_block(text):
 
     if text.startswith("```"):
         lines = text.splitlines()
-
         if len(lines) >= 3:
             text = "\n".join(lines[1:-1]).strip()
 
@@ -526,10 +536,59 @@ def is_unclear_text(text):
         "not enough visible",
         "not enough detail",
         "not clearly visible",
-        "couldn’t clearly"
+        "couldn’t clearly",
+        "hard to tell",
+        "difficult to tell",
+        "difficult to identify",
+        "hard to identify",
+        "partially visible",
+        "cropped",
+        "hidden",
+        "too far",
+        "low quality",
+        "poor lighting",
+        "not enough evidence",
+        "insufficient evidence",
+        "not enough information",
+        "cannot determine",
+        "can't determine",
+        "unable to determine",
+        "ambiguous",
+        "vague",
+        "not identifiable",
+        "not recognizable"
     ]
 
     return any(phrase in lower for phrase in unclear_phrases)
+
+
+def is_weak_guess_text(text):
+    lower = clean_text(text).lower()
+
+    weak_guess_phrases = [
+        "could be",
+        "might be",
+        "maybe",
+        "possibly",
+        "perhaps",
+        "it is hard to say",
+        "hard to say",
+        "not sure",
+        "uncertain",
+        "unknown",
+        "cannot tell",
+        "can't tell",
+        "not enough evidence",
+        "open-ended build",
+        "open-ended troy block arrangement",
+        "abstract structure",
+        "generic structure",
+        "random structure",
+        "simple block structure",
+        "uncertain build"
+    ]
+
+    return any(phrase in lower for phrase in weak_guess_phrases)
 
 
 def remove_page_words(text):
@@ -552,13 +611,7 @@ def remove_page_words(text):
     return clean_text(text)
 
 
-def clean_build_title(title, fallback="Open-ended Troy block arrangement"):
-    """
-    Removes awkward titles like:
-    - Aeroplane Style Build -> Aeroplane
-    - Pickup Truck Style Build -> Pickup Truck
-    - Temple Block Build -> Temple
-    """
+def clean_build_title(title, fallback="Troy Block Build"):
     text = remove_page_words(clean_text(title, fallback))
 
     bad_suffix_patterns = [
@@ -568,7 +621,9 @@ def clean_build_title(title, fallback="Open-ended Troy block arrangement"):
         r"\s+style$",
         r"\s+troy\s+block\s+build$",
         r"\s+block\s+build$",
-        r"\s+build$"
+        r"\s+build$",
+        r"\s+model$",
+        r"\s+structure$"
     ]
 
     for pattern in bad_suffix_patterns:
@@ -579,6 +634,12 @@ def clean_build_title(title, fallback="Open-ended Troy block arrangement"):
     if not text:
         text = fallback
 
+    return text
+
+
+def normalize_name(value):
+    text = clean_text(value).lower()
+    text = re.sub(r"[^a-z0-9]+", "", text)
     return text
 
 
@@ -598,10 +659,14 @@ def prepare_image_for_models(image_file):
     img = Image.open(image_file.stream)
     img = ImageOps.exif_transpose(img)
 
+    original_width, original_height = img.size
+
+    if original_width < 300 or original_height < 300:
+        raise ValueError("Image resolution is too low. Please upload a clearer photo.")
+
     if img.mode != "RGB":
         img = img.convert("RGB")
 
-    # Old image-size setting
     img.thumbnail((900, 900))
 
     for quality in [80, 70, 60, 50, 40]:
@@ -612,7 +677,6 @@ def prepare_image_for_models(image_file):
             data_url = f"data:image/jpeg;base64,{encoded}"
             return encoded, data_url, image_hash
 
-    # Old fallback image-size setting
     img.thumbnail((700, 700))
 
     for quality in [60, 50, 40, 35]:
@@ -635,32 +699,16 @@ def prepare_image_for_models(image_file):
 def pick_feedback_style(image_hash):
     styles = [
         {
-            "name": "story-builder",
-            "instruction": "Focus on the pretend-play story this build could become."
+            "name": "strict-pattern-checker",
+            "instruction": "First check if the build exactly matches a known Troy pattern. If not, analyze only with strong visible evidence."
         },
         {
-            "name": "designer",
-            "instruction": "Focus on shape choices, arrangement, and design decisions."
+            "name": "strict-builder",
+            "instruction": "Focus only on visible supports, levels, blocks, openings, wheels, curves, and layout."
         },
         {
-            "name": "builder",
-            "instruction": "Focus on supports, balance, levels, and how parts hold together."
-        },
-        {
-            "name": "inventor",
-            "instruction": "Focus on unusual combinations, hybrid ideas, and creative guessing."
-        },
-        {
-            "name": "architect",
-            "instruction": "Focus on rooms, floors, openings, height, layout, and spaces."
-        },
-        {
-            "name": "movement-maker",
-            "instruction": "Focus on motion, wheels, paths, travel, vehicles, or moving ideas."
-        },
-        {
-            "name": "pattern-finder",
-            "instruction": "Focus on repeated blocks, matching, spacing, and visual patterns."
+            "name": "strict-designer",
+            "instruction": "Reject vague guesses. Use only clear shape and arrangement evidence."
         }
     ]
 
@@ -670,11 +718,11 @@ def pick_feedback_style(image_hash):
 
 def build_unique_hint(image_hash):
     hints = [
-        "Use fresh wording for this image.",
-        "Do not repeat generic feedback titles.",
-        "Make the learning cards specific to this exact build.",
-        "Let visible parts guide the learning feedback.",
-        "Avoid basic titles like Creativity, Problem-Solving, or Spatial Awareness."
+        "Use strict evidence-based wording.",
+        "Reject weak guesses.",
+        "Do not invent hidden details.",
+        "Use the book pattern name exactly if it is a strong match.",
+        "Do not add Style Build to any title."
     ]
 
     seed_number = int(image_hash[8:16], 16)
@@ -687,7 +735,7 @@ def compact_pattern_library_text():
     for pattern in TROY_PATTERN_LIBRARY:
         cue_text = ", ".join(pattern["visual_cues"])
         lines.append(
-            f'- {pattern["name"]} ({pattern["category"]}) — '
+            f'- id="{pattern["id"]}", name="{pattern["name"]}", category="{pattern["category"]}" — '
             f'{pattern["description"]} Visible cues: {cue_text}.'
         )
 
@@ -700,77 +748,94 @@ def build_troy_prompt(age, image_hash):
     pattern_library = compact_pattern_library_text()
 
     return f"""
-You are Troy AI Analyzer.
+You are Troy AI Analyzer in STRICT MODE.
 
 You are analyzing one uploaded image of a child's Troy wooden-block build.
 
 Child age:
 {age if age else "unknown"}
 
-You have a Troy pattern reference list.
-
-Your job has TWO MODES:
-
-MODE 1: Pattern matching
-If the child's uploaded build clearly matches one known Troy pattern, return matchType as "book_pattern".
-Only do this when the match is visually strong.
-
-MODE 2: Creative open-ended analysis
-If the uploaded build does not clearly match any known pattern, return matchType as "creative_guess".
-Do not force random builds into the pattern list.
-
-Known Troy patterns:
+Known Troy pattern reference list:
 {pattern_library}
+
+STRICT MODE RULES:
+You must be extremely strict.
+
+Mark imageStatus as "invalid" if:
+- Troy blocks are not clearly visible
+- the build is blurry, cropped, too far, dark, partially hidden, or low quality
+- the object cannot be identified with strong visible evidence
+- the build takes up only a small part of the photo
+- the photo mostly shows people, floor, hands, furniture, background, or random objects
+- you are guessing mainly from imagination instead of visible block structure
+- you would need to say "maybe", "possibly", "might be", "could be", "hard to tell", or "unclear"
+- you cannot identify at least 2 visible construction features such as base, supports, levels, wheels, openings, bridge span, roof, symmetry, repeated blocks, or curved pieces
+
+If invalid:
+- imageStatus must be "invalid"
+- confidenceScore must be below 75
+- matchType must be "invalid"
+- matchedPattern must contain null values
+- buildGuess title must be exactly "We couldn’t clearly analyze this image"
+- do not guess a specific object
+- whatTheyLearned must be []
+- give only photo-retake suggestions
+
+PATTERN MATCHING RULES:
+If the uploaded image strongly matches a known Troy pattern:
+- matchType must be "book_pattern"
+- matchConfidence must be 94 or above
+- matchedPattern.id must exactly match the known pattern id
+- matchedPattern.name must exactly match the known pattern name
+- buildGuess.title must exactly equal the known pattern name
+- do not rename it
+- do not say "Style Build"
+- do not say "looks like a variation"
+- do not make a creative alternative name
+- do not say page number
+
+A book pattern match needs:
+- same overall shape
+- same main block arrangement
+- at least 3 matching visual cues from the reference list
+- strong visible evidence
+
+If the child’s build shares only one or two small features with a known pattern:
+- do not call it a book pattern
+- use creative_guess only if the build is still clearly visible and confidence is 82 or above
+
+CREATIVE GUESS RULES:
+If it does not strongly match the book:
+- matchType must be "creative_guess"
+- matchedPattern must be null
+- confidenceScore must be 82 or above
+- title must be a short object name only
+- do not use vague names like "Open-ended Troy Block Build", "Abstract Structure", or "Block Arrangement"
+- do not use "Style Build", "Build", "Model", or "Structure" at the end of the title
+- no guessing if evidence is weak
 
 Important display rules:
 - Never mention page numbers.
 - Do not say "page", "book page", or "from page".
-- Do not use titles like "Aeroplane Style Build", "Temple Style Build", or "Truck Style Build".
-- If the guess is an aeroplane, title should be "Aeroplane".
-- If the guess is a pickup truck, title should be "Pickup Truck".
-- If the guess is a temple, title should be "Temple".
-- Do not add "Style Build" to the title.
+- Do not add "Style Build" to any title.
+- Use exact book name when matched.
+- If the guess is Aeroplane, title should be exactly "Aeroplane".
+- If the guess is Pickup Truck, title should be exactly "Pickup Truck".
+- If the guess is Temple, title should be exactly "Temple".
 
-Pattern matching rules:
-- Use the known pattern only when the uploaded build has the same main structure and visible cues.
-- A random tower should not become Qutub Minar unless it has a tapering monument-like tower shape.
-- A random multi-level block build should not become Earthquake Resistant Structure unless it has a multi-floor building form with rocker or movable base cues.
-- A random vehicle should not become Pickup Truck unless it has a long vehicle base and wheel or cylinder cues.
-- A random arch should not become India Gate unless it has a monument gateway form with side pillars and a central arch.
-- If similarity is weak or uncertain, use creative_guess.
-- If matchConfidence is below 78, use creative_guess.
-- If matchType is creative_guess, matchedPattern must be null.
-
-Feedback style for this image:
+Feedback style:
 {style["name"]} — {style["instruction"]}
 
 Uniqueness instruction:
 {unique_hint}
 
-General analysis rules:
-- Look at the whole image first.
-- Give a creative but realistic guess.
-- Do not force labels like tower, house, bridge, or car.
-- If it looks like a hybrid idea, describe the hybrid naturally.
-- If it has floors or sections going upward, do not automatically call it a tower.
-- It may be a multi-level building, layered structure, raised house, platform scene, parking-garage-like build, lookout station, or pretend-play setup.
-- Base every sentence only on visible details.
-- Mention visible parts such as base, floors, levels, gaps, supports, repeated blocks, stacked sections, roof-like pieces, wheel-like parts, curved pieces, openings, paths, bridges, rooms, platforms, loose blocks, or upper/lower sections if visible.
-- If the image is not a Troy/block build, mark it invalid.
-- If the image is unclear, mark it invalid and do not give normal learning feedback.
-- If invalid, do not say the child built a specific object.
-- If unsure but still visible, use cautious phrases like "looks like", "could be", or "seems to".
-- Keep the tone simple, warm, parent-friendly, and encouraging.
-- Return JSON only.
+Learning feedback rules:
+- Every learning card must be based on visible details.
+- Do not use generic titles.
+- Do not use: Creativity, Problem-Solving, Problem Solving, Spatial Awareness, Spatial Thinking, Imagination, Motor Skills, Fine Motor Skills, Engineering, STEM Learning, Critical Thinking.
+- Use specific titles like: Layer Planning, Bridge Support, Moving Base Idea, Roof Shape Experiment, Open-Space Design, Block Pattern Play, Careful Stacking, Shape Combining, Build-and-Tell Practice, Support Below Space Above, Vehicle Shape Thinking, Room-Making, Testing What Holds.
 
-BANNED LEARNING CARD TITLES:
-Do not use:
-Creativity, Problem-Solving, Problem Solving, Spatial Awareness, Spatial Thinking, Imagination, Motor Skills, Fine Motor Skills, Engineering, STEM Learning, Critical Thinking.
-
-Use specific learning card titles like:
-Layer Planning, Upper-Level Building, Bridge Support, Moving Base Idea, Tiny Home Story, Roof Shape Experiment, Open-Space Design, Block Pattern Play, Creature-Making, Careful Stacking, Shape Combining, Idea Mixing, Build-and-Tell Practice, Small-World Making, Support Below Space Above, Vehicle Shape Thinking, Room-Making, Entrance Building, Testing What Holds, Above-Below Thinking.
-
-Return this exact JSON shape:
+Return JSON only in this exact shape:
 
 {{
   "status": "success",
@@ -785,27 +850,27 @@ Return this exact JSON shape:
     "whyMatched": "short visual reason or null"
   }},
   "buildGuess": {{
-    "title": "short object name only, without Style Build",
-    "subtitle": "short reason based on visible image details"
+    "title": "short exact title only",
+    "subtitle": "short reason based only on visible details"
   }},
   "whatWeFound": {{
     "title": "What we found",
-    "summary": "2 short sentences describing the visible build with unique details"
+    "summary": "2 short sentences describing only visible details"
   }},
   "whatTheyLearned": [
     {{
-      "title": "specific learning skill title, not generic",
-      "description": "specific explanation connected to visible details in this build",
+      "title": "specific learning skill title",
+      "description": "specific explanation connected to visible details",
       "color": "cream"
     }},
     {{
-      "title": "specific learning skill title, not generic",
-      "description": "specific explanation connected to visible details in this build",
+      "title": "specific learning skill title",
+      "description": "specific explanation connected to visible details",
       "color": "green"
     }},
     {{
-      "title": "specific learning skill title, not generic",
-      "description": "specific explanation connected to visible details in this build",
+      "title": "specific learning skill title",
+      "description": "specific explanation connected to visible details",
       "color": "blue"
     }}
   ],
@@ -825,15 +890,6 @@ Return this exact JSON shape:
     "specific next build idea related to this build"
   ]
 }}
-
-Invalid image rules:
-- imageStatus must be "invalid"
-- matchType must be "invalid"
-- confidenceScore must be below 65
-- matchedPattern must contain null values
-- whatTheyLearned must be []
-- buildGuess title must be "We couldn’t clearly analyze this image"
-- Do not guess a specific object if invalid
 """
 
 
@@ -1020,8 +1076,8 @@ def creative_fallback_cards(build_guess, summary, noticed, image_hash, matched_p
 
     if matched_pattern and matched_pattern.get("name"):
         card_pool.append({
-            "title": "Pattern Matching",
-            "description": f"The child recreated parts of the {matched_pattern.get('name')} pattern while making choices about placement and shape.",
+            "title": "Exact Pattern Recreation",
+            "description": f"The child recreated the {matched_pattern.get('name')} pattern using matching visible shape and block arrangement.",
             "color": "cream"
         })
 
@@ -1128,6 +1184,19 @@ def find_pattern_by_id(pattern_id):
     return None
 
 
+def find_pattern_by_name(pattern_name):
+    wanted = normalize_name(pattern_name)
+
+    if not wanted:
+        return None
+
+    for pattern in TROY_PATTERN_LIBRARY:
+        if normalize_name(pattern["name"]) == wanted:
+            return pattern
+
+    return None
+
+
 def normalize_matched_pattern(raw_matched_pattern, match_type):
     if not isinstance(raw_matched_pattern, dict):
         return None
@@ -1144,20 +1213,22 @@ def normalize_matched_pattern(raw_matched_pattern, match_type):
 
     library_pattern = find_pattern_by_id(pattern_id)
 
-    if library_pattern:
-        pattern_name = library_pattern["name"]
-        category = library_pattern["category"]
+    if not library_pattern:
+        library_pattern = find_pattern_by_name(pattern_name)
 
-    if match_type != "book_pattern" or match_confidence < BOOK_MATCH_THRESHOLD:
+    if not library_pattern:
         return None
 
-    if not pattern_name:
+    if match_type != "book_pattern":
+        return None
+
+    if match_confidence < BOOK_MATCH_THRESHOLD:
         return None
 
     return {
-        "id": pattern_id or None,
-        "name": pattern_name,
-        "category": category or None,
+        "id": library_pattern["id"],
+        "name": library_pattern["name"],
+        "category": library_pattern["category"],
         "matchConfidence": match_confidence,
         "whyMatched": remove_page_words(
             why_matched or "the visible structure matches the main shape and block arrangement"
@@ -1276,12 +1347,11 @@ def normalize_analysis_response(parsed, image_hash):
 
     combined_main_text = " ".join([raw_title, raw_subtitle, raw_summary])
 
-    # Main contradiction fix:
-    # If AI says unclear/not clear, do NOT continue with normal feedback.
     if (
         image_status != "valid"
-        or confidence < 65
+        or confidence < ABSOLUTE_MIN_CONFIDENCE
         or is_unclear_text(combined_main_text)
+        or is_weak_guess_text(combined_main_text)
     ):
         return build_invalid_response(raw_summary or raw_subtitle)
 
@@ -1295,8 +1365,13 @@ def normalize_analysis_response(parsed, image_hash):
 
     matched_pattern = normalize_matched_pattern(raw_matched_pattern, final_match_type)
 
-    if not matched_pattern and final_match_type == "book_pattern":
+    if matched_pattern:
+        final_match_type = "book_pattern"
+    else:
         final_match_type = "creative_guess"
+
+    if not matched_pattern and confidence < VALID_CONFIDENCE_THRESHOLD:
+        return build_invalid_response(raw_summary or raw_subtitle)
 
     noticed = ensure_list(
         parsed.get("whatWeNoticed"),
@@ -1311,26 +1386,23 @@ def normalize_analysis_response(parsed, image_hash):
     noticed = [remove_page_words(item) for item in noticed]
 
     if matched_pattern:
-        default_title = matched_pattern["name"]
-        default_subtitle = (
-            f"This looks like the {matched_pattern['name']} because "
-            f"{matched_pattern['whyMatched']}."
-        )
+        normalized_build_guess = {
+            "title": matched_pattern["name"],
+            "subtitle": (
+                f"This matches the {matched_pattern['name']} pattern because "
+                f"{matched_pattern['whyMatched']}."
+            )
+        }
     else:
-        default_title = "Open-ended Troy block arrangement"
-        default_subtitle = "The child created a visible structure using blocks."
+        cleaned_title = clean_build_title(raw_title)
 
-    normalized_build_guess = {
-        "title": clean_build_title(raw_title, default_title),
-        "subtitle": remove_page_words(clean_text(raw_subtitle, default_subtitle))
-    }
+        if is_weak_guess_text(cleaned_title) or len(cleaned_title.split()) > 5:
+            return build_invalid_response(raw_summary or raw_subtitle)
 
-    if matched_pattern:
-        normalized_build_guess["title"] = clean_build_title(matched_pattern["name"])
-        normalized_build_guess["subtitle"] = (
-            f"This looks like the {matched_pattern['name']} because "
-            f"{matched_pattern['whyMatched']}."
-        )
+        normalized_build_guess = {
+            "title": cleaned_title,
+            "subtitle": remove_page_words(clean_text(raw_subtitle, "The visible block arrangement supports this guess."))
+        }
 
     normalized_summary = remove_page_words(
         clean_text(
@@ -1338,6 +1410,9 @@ def normalize_analysis_response(parsed, image_hash):
             "The image shows a child-made block structure with visible block placement."
         )
     )
+
+    if is_unclear_text(normalized_summary) or is_weak_guess_text(normalized_summary):
+        return build_invalid_response(normalized_summary)
 
     result = {
         "status": "success",
@@ -1417,9 +1492,9 @@ def analyze_with_gemini_rest(image_base64, age, image_hash):
             }
         ],
         "generationConfig": {
-            "temperature": 0.72,
-            "topP": 0.95,
-            "maxOutputTokens": 1600,
+            "temperature": 0.25,
+            "topP": 0.75,
+            "maxOutputTokens": 1500,
             "responseMimeType": "application/json"
         }
     }
@@ -1455,7 +1530,7 @@ def analyze_with_groq_rest(image_data_url, age, image_hash):
         "messages": [
             {
                 "role": "system",
-                "content": "You are a careful, creative visual analysis assistant. Return valid JSON only."
+                "content": "You are a strict visual pattern checker. Return valid JSON only."
             },
             {
                 "role": "user",
@@ -1473,9 +1548,9 @@ def analyze_with_groq_rest(image_data_url, age, image_hash):
                 ]
             }
         ],
-        "temperature": 0.72,
-        "top_p": 0.95,
-        "max_completion_tokens": 1600,
+        "temperature": 0.25,
+        "top_p": 0.75,
+        "max_completion_tokens": 1500,
         "response_format": {
             "type": "json_object"
         }
@@ -1572,6 +1647,8 @@ def health():
         "provider_order": get_provider_order(),
         "pattern_count": len(TROY_PATTERN_LIBRARY),
         "book_match_threshold": BOOK_MATCH_THRESHOLD,
+        "valid_confidence_threshold": VALID_CONFIDENCE_THRESHOLD,
+        "absolute_min_confidence": ABSOLUTE_MIN_CONFIDENCE,
         "cache_items": len(analysis_cache),
         "upload_limit_per_ip_per_day": UPLOAD_LIMIT_PER_IP_PER_DAY,
         "upload_cooldown_seconds": UPLOAD_COOLDOWN_SECONDS
@@ -1637,7 +1714,8 @@ def analyze():
                 "gemini_model": get_gemini_model(),
                 "groq_model": get_groq_vision_model(),
                 "feedback_style": pick_feedback_style(image_hash)["name"],
-                "pattern_count": len(TROY_PATTERN_LIBRARY)
+                "pattern_count": len(TROY_PATTERN_LIBRARY),
+                "strict_mode": True
             }
 
         save_cache(cache_key, result)
@@ -1701,7 +1779,7 @@ Build summary:
 Parent question:
 {question}
 
-Answer in a short, warm, creative but realistic way.
+Answer in a short, warm, realistic way.
 Use only the build details provided.
 Do not invent hidden abilities or unseen parts.
 Do not mention page numbers.
@@ -1721,16 +1799,16 @@ Keep it to 3 to 5 short lines.
             "messages": [
                 {
                     "role": "system",
-                    "content": "You are a warm parent-friendly assistant for Troy World."
+                    "content": "You are a warm but strict parent-friendly assistant for Troy World."
                 },
                 {
                     "role": "user",
                     "content": prompt
                 }
             ],
-            "temperature": 0.55,
-            "top_p": 0.9,
-            "max_completion_tokens": 300
+            "temperature": 0.35,
+            "top_p": 0.8,
+            "max_completion_tokens": 250
         }
 
         response = requests.post(url, headers=headers, json=payload, timeout=30)
