@@ -12,9 +12,9 @@ from collections import OrderedDict, Counter
 from datetime import datetime
 
 import requests
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, send_file
 from flask_cors import CORS
-from PIL import Image, ImageOps
+from PIL import Image, ImageOps, ImageDraw, ImageFont
 from dotenv import load_dotenv
 from werkzeug.utils import secure_filename
 from werkzeug.exceptions import RequestEntityTooLarge
@@ -29,6 +29,9 @@ load_dotenv(BASE_DIR / ".env")
 
 DATA_DIR = BASE_DIR / "data"
 DATA_DIR.mkdir(exist_ok=True)
+
+IMAGES_DIR = DATA_DIR / "images"
+IMAGES_DIR.mkdir(exist_ok=True)
 
 FEEDBACK_FILE = DATA_DIR / "feedback.jsonl"
 ANALYTICS_FILE = DATA_DIR / "analytics.jsonl"
@@ -61,13 +64,8 @@ SECOND_OPINION_ON_INVALID = os.environ.get("SECOND_OPINION_ON_INVALID", "false")
 # Strictness settings
 # =========================================================
 
-# Book matching should be strict.
 BOOK_MATCH_THRESHOLD = 94
-
-# Creative child-made builds should not be rejected too easily.
 VALID_CONFIDENCE_THRESHOLD = 72
-
-# Below this, always invalid.
 ABSOLUTE_MIN_CONFIDENCE = 60
 
 
@@ -736,6 +734,36 @@ def prepare_image_for_models(image_file):
     )
 
 
+def save_analysis_image(image_base64, image_hash):
+    try:
+        image_bytes = base64.b64decode(image_base64)
+        image_path = IMAGES_DIR / f"{image_hash}.jpg"
+
+        with open(image_path, "wb") as file:
+            file.write(image_bytes)
+
+        return image_hash
+
+    except Exception as e:
+        print("Could not save image:", str(e))
+        return ""
+
+
+def load_analysis_image(image_id):
+    if not image_id:
+        return None
+
+    image_path = IMAGES_DIR / f"{image_id}.jpg"
+
+    if not image_path.exists():
+        return None
+
+    try:
+        return image_path.read_bytes()
+    except Exception:
+        return None
+
+
 # =========================================================
 # Prompt
 # =========================================================
@@ -807,7 +835,7 @@ If the child built something of their own:
 - confidenceScore should be 72 or above if the build is clear
 - give the best object guess based on visible features
 - the title must be short and natural
-- examples: "Giraffe", "Rocket", "Crane", "Robot", "Animal House", "Tall Watchtower", "Playground Slide"
+- examples: "Giraffe", "Rocket", "Crane", "Robot", "Animal House", "Tall Watchtower", "Playground Slide", "Castle", "Fort", "Boat"
 - do not use dry titles like "Block Arrangement", "Troy Block Creation", "Abstract Structure", or "Open-ended Build"
 - do not add "Style Build", "Build", "Model", or "Structure" at the end
 - explain why you guessed it using visible details
@@ -820,8 +848,8 @@ For animals or characters:
 For vehicles:
 - mention base, wheels, body, front/back, cabin, or direction if visible
 
-For buildings:
-- mention floors, roof, entrance, pillars, levels, supports, or rooms if visible
+For buildings, castles, forts, or houses:
+- mention floors, roof, entrance, pillars, levels, supports, towers, walls, base, or rooms if visible
 
 For bridges/roads:
 - mention span, path, gap, supports, ramps, or direction if visible
@@ -845,6 +873,7 @@ Important wording rules:
 - If the guess is Aeroplane, title should be exactly "Aeroplane".
 - If the guess is Pickup Truck, title should be exactly "Pickup Truck".
 - If the guess is Temple, title should be exactly "Temple".
+- If the guess is Castle, title should be exactly "Castle".
 
 Learning feedback rules:
 - Every learning card must mention visible details.
@@ -852,7 +881,7 @@ Learning feedback rules:
 - Do not give the same generic feedback repeatedly.
 - Do not use generic titles.
 - Do not use: Creativity, Problem-Solving, Problem Solving, Spatial Awareness, Spatial Thinking, Imagination, Motor Skills, Fine Motor Skills, Engineering, STEM Learning, Critical Thinking.
-- Use specific titles like: Animal Body Planning, Long-Neck Balance, Character-Making, Shape Mapping, Layer Planning, Bridge Support, Moving Base Idea, Roof Shape Experiment, Open-Space Design, Block Pattern Play, Careful Stacking, Shape Combining, Build-and-Tell Practice, Support Below Space Above, Vehicle Shape Thinking, Room-Making, Testing What Holds.
+- Use specific titles like: Animal Body Planning, Long-Neck Balance, Character-Making, Shape Mapping, Castle Planning, Symmetry in Building, Layered Construction, Architectural Details, Bridge Support, Moving Base Idea, Roof Shape Experiment, Open-Space Design, Block Pattern Play, Careful Stacking, Shape Combining, Build-and-Tell Practice, Support Below Space Above, Vehicle Shape Thinking, Room-Making, Testing What Holds.
 
 Return JSON only in this exact shape:
 
@@ -959,6 +988,25 @@ def creative_fallback_cards(build_guess, summary, noticed, image_hash, matched_p
 
     card_pool = []
 
+    if contains_any(context, ["castle", "fort", "tower", "wall", "gate", "central tower", "side towers"]):
+        card_pool.extend([
+            {
+                "title": "Castle Planning",
+                "description": f"The child arranged blocks into a castle-like form, especially around {main_detail}.",
+                "color": "cream"
+            },
+            {
+                "title": "Symmetry in Building",
+                "description": "The child used repeated or balanced parts to make the build feel organized and castle-like.",
+                "color": "green"
+            },
+            {
+                "title": "Architectural Details",
+                "description": "The child used details such as towers, roofs, openings, or side parts to suggest a larger place.",
+                "color": "blue"
+            }
+        ])
+
     if contains_any(context, ["animal", "giraffe", "neck", "legs", "head", "body", "tail", "creature", "dog", "cat", "horse", "dinosaur", "bird"]):
         card_pool.extend([
             {
@@ -975,18 +1023,13 @@ def creative_fallback_cards(build_guess, summary, noticed, image_hash, matched_p
                 "title": "Character-Making",
                 "description": "The build shows the child turning block shapes into a character that can be named and described.",
                 "color": "blue"
-            },
-            {
-                "title": "Head-Body-Leg Mapping",
-                "description": "The child practiced connecting different block positions to body parts like head, body, and legs.",
-                "color": "cream"
             }
         ])
 
     if contains_any(context, ["level", "floor", "platform", "layer", "upper", "lower", "multi-level"]):
         card_pool.extend([
             {
-                "title": "Layer Planning",
+                "title": "Layered Construction",
                 "description": f"The child explored how one section can sit above another, especially around {main_detail}.",
                 "color": "cream"
             },
@@ -1670,6 +1713,377 @@ def save_cache(cache_key, result):
 
 
 # =========================================================
+# Backend PNG feedback card generation
+# =========================================================
+
+def load_font(size, bold=False):
+    font_paths = []
+
+    if bold:
+        font_paths = [
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+            "/usr/share/fonts/truetype/liberation2/LiberationSans-Bold.ttf"
+        ]
+    else:
+        font_paths = [
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+            "/usr/share/fonts/truetype/liberation2/LiberationSans-Regular.ttf"
+        ]
+
+    for path in font_paths:
+        try:
+            return ImageFont.truetype(path, size)
+        except Exception:
+            continue
+
+    return ImageFont.load_default()
+
+
+def text_size(draw, text, font):
+    bbox = draw.textbbox((0, 0), str(text), font=font)
+    return bbox[2] - bbox[0], bbox[3] - bbox[1]
+
+
+def wrap_text(draw, text, font, max_width):
+    text = clean_text(text)
+
+    if not text:
+        return []
+
+    words = text.split()
+    lines = []
+    current = ""
+
+    for word in words:
+        test = f"{current} {word}".strip()
+        width, _ = text_size(draw, test, font)
+
+        if width <= max_width:
+            current = test
+        else:
+            if current:
+                lines.append(current)
+            current = word
+
+    if current:
+        lines.append(current)
+
+    return lines
+
+
+def draw_wrapped_text(draw, x, y, text, font, fill, max_width, line_gap=5):
+    lines = wrap_text(draw, text, font, max_width)
+
+    _, line_height = text_size(draw, "Ag", font)
+    line_height += line_gap
+
+    for line in lines:
+        draw.text((x, y), line, fill=fill, font=font)
+        y += line_height
+
+    return y
+
+
+def measure_wrapped_text(draw, text, font, max_width, line_gap=5):
+    lines = wrap_text(draw, text, font, max_width)
+
+    if not lines:
+        return 0
+
+    _, line_height = text_size(draw, "Ag", font)
+    return len(lines) * (line_height + line_gap)
+
+
+def draw_section(draw, y, title, body=None, items=None, bg=(255, 247, 223), width=520):
+    margin = 18
+    padding = 14
+    x1 = margin
+    x2 = width - margin
+    content_width = x2 - x1 - (padding * 2)
+
+    title_font = load_font(14, bold=True)
+    body_font = load_font(12, bold=False)
+
+    title_height = measure_wrapped_text(draw, title, title_font, content_width)
+    body_height = 0
+    items_height = 0
+
+    if body:
+        body_height = measure_wrapped_text(draw, body, body_font, content_width)
+
+    if items:
+        for item in items:
+            items_height += measure_wrapped_text(draw, f"• {item}", body_font, content_width) + 5
+
+    section_height = padding + title_height + 8 + body_height + items_height + padding
+
+    draw.rounded_rectangle(
+        [x1, y, x2, y + section_height],
+        radius=14,
+        fill=bg,
+        outline=(234, 223, 202),
+        width=1
+    )
+
+    cy = y + padding
+    cy = draw_wrapped_text(draw, x1 + padding, cy, title, title_font, (47, 58, 47), content_width)
+    cy += 8
+
+    if body:
+        cy = draw_wrapped_text(draw, x1 + padding, cy, body, body_font, (75, 85, 99), content_width)
+
+    if items:
+        for item in items:
+            cy = draw_wrapped_text(draw, x1 + padding, cy, f"• {item}", body_font, (75, 85, 99), content_width)
+            cy += 5
+
+    return y + section_height + 12
+
+
+def draw_learning_section(draw, y, cards, width=520):
+    if not cards:
+        return y
+
+    margin = 18
+    padding = 14
+    x1 = margin
+    x2 = width - margin
+    content_width = x2 - x1 - (padding * 2)
+
+    title_font = load_font(14, bold=True)
+    card_title_font = load_font(12, bold=True)
+    body_font = load_font(11, bold=False)
+
+    section_height = padding + measure_wrapped_text(draw, "🧠 What they learned", title_font, content_width) + 10
+
+    card_heights = []
+    for index, card in enumerate(cards):
+        card_title = f"{index + 1}. {clean_text(card.get('title'))}"
+        card_body = clean_text(card.get("description"))
+        h = 12
+        h += measure_wrapped_text(draw, card_title, card_title_font, content_width - 20)
+        h += 5
+        h += measure_wrapped_text(draw, card_body, body_font, content_width - 20)
+        h += 12
+        card_heights.append(h)
+        section_height += h + 8
+
+    section_height += padding
+
+    draw.rounded_rectangle(
+        [x1, y, x2, y + section_height],
+        radius=14,
+        fill=(234, 247, 237),
+        outline=(201, 229, 210),
+        width=1
+    )
+
+    cy = y + padding
+    cy = draw_wrapped_text(draw, x1 + padding, cy, "🧠 What they learned", title_font, (47, 58, 47), content_width)
+    cy += 10
+
+    for index, card in enumerate(cards):
+        card_title = f"{index + 1}. {clean_text(card.get('title'))}"
+        card_body = clean_text(card.get("description"))
+        h = card_heights[index]
+
+        draw.rounded_rectangle(
+            [x1 + padding, cy, x2 - padding, cy + h],
+            radius=12,
+            fill=(255, 255, 255),
+            outline=(234, 223, 202),
+            width=1
+        )
+
+        inner_y = cy + 10
+        inner_y = draw_wrapped_text(
+            draw,
+            x1 + padding + 10,
+            inner_y,
+            card_title,
+            card_title_font,
+            (47, 58, 47),
+            content_width - 20
+        )
+        inner_y += 5
+        draw_wrapped_text(
+            draw,
+            x1 + padding + 10,
+            inner_y,
+            card_body,
+            body_font,
+            (75, 85, 99),
+            content_width - 20
+        )
+
+        cy += h + 8
+
+    return y + section_height + 12
+
+
+def create_feedback_card_png(analysis, image_bytes=None):
+    width = 520
+    max_height = 9000
+
+    bg_color = (255, 250, 240)
+    canvas = Image.new("RGB", (width, max_height), bg_color)
+    draw = ImageDraw.Draw(canvas)
+
+    title_font = load_font(28, bold=True)
+    subtitle_font = load_font(14, bold=False)
+    small_font = load_font(12, bold=True)
+
+    margin = 18
+    y = 16
+
+    if image_bytes:
+        try:
+            build_img = Image.open(BytesIO(image_bytes))
+            build_img = ImageOps.exif_transpose(build_img)
+
+            if build_img.mode != "RGB":
+                build_img = build_img.convert("RGB")
+
+            build_img.thumbnail((width - margin * 2, 260))
+
+            img_x = (width - build_img.width) // 2
+
+            mask = Image.new("L", build_img.size, 0)
+            mask_draw = ImageDraw.Draw(mask)
+            mask_draw.rounded_rectangle(
+                [0, 0, build_img.width, build_img.height],
+                radius=14,
+                fill=255
+            )
+
+            canvas.paste(build_img, (img_x, y), mask)
+            y += build_img.height + 16
+
+        except Exception as e:
+            print("Could not add image to feedback card:", str(e))
+
+    match_type = clean_text(analysis.get("matchType"))
+    badge_text = "Creative Analysis"
+
+    if match_type == "book_pattern":
+        badge_text = "Pattern Matched"
+    elif match_type == "invalid":
+        badge_text = "Needs Clearer Photo"
+
+    badge_w, badge_h = text_size(draw, badge_text, small_font)
+    draw.rounded_rectangle(
+        [margin, y, margin + badge_w + 20, y + badge_h + 12],
+        radius=999,
+        fill=(255, 247, 223),
+        outline=(234, 223, 202),
+        width=1
+    )
+    draw.text((margin + 10, y + 6), badge_text, fill=(154, 106, 33), font=small_font)
+    y += badge_h + 22
+
+    build_guess = safe_get_dict(analysis, "buildGuess")
+    title = clean_text(build_guess.get("title"), "Troy Build")
+    subtitle = clean_text(build_guess.get("subtitle"), "")
+
+    y = draw_wrapped_text(draw, margin, y, title, title_font, (154, 106, 33), width - margin * 2)
+    y += 8
+
+    y = draw_wrapped_text(draw, margin, y, subtitle, subtitle_font, (75, 85, 99), width - margin * 2)
+    y += 14
+
+    what_found = safe_get_dict(analysis, "whatWeFound")
+    summary = clean_text(what_found.get("summary"))
+
+    y = draw_section(
+        draw,
+        y,
+        "🔍 What we found",
+        body=summary,
+        bg=(255, 247, 223),
+        width=width
+    )
+
+    matched_pattern = analysis.get("matchedPattern")
+
+    if match_type == "book_pattern" and isinstance(matched_pattern, dict):
+        matched_name = clean_text(matched_pattern.get("name"))
+        strength = clean_text(matched_pattern.get("matchConfidence"))
+        cues = ensure_list(matched_pattern.get("matchedCues"), [], limit=5)
+
+        body = f"Matched Pattern: {matched_name}\nMatch Strength: {strength}%"
+
+        y = draw_section(
+            draw,
+            y,
+            "📘 Pattern Match Details",
+            body=body,
+            items=cues,
+            bg=(234, 247, 237),
+            width=width
+        )
+
+    y = draw_learning_section(
+        draw,
+        y,
+        analysis.get("whatTheyLearned") or [],
+        width=width
+    )
+
+    y = draw_section(
+        draw,
+        y,
+        "👀 What we noticed",
+        items=ensure_list(analysis.get("whatWeNoticed"), [], limit=5),
+        bg=(255, 247, 223),
+        width=width
+    )
+
+    y = draw_section(
+        draw,
+        y,
+        "💡 Suggestions for parent",
+        items=ensure_list(analysis.get("suggestionsForParent"), [], limit=5),
+        bg=(234, 243, 255),
+        width=width
+    )
+
+    y = draw_section(
+        draw,
+        y,
+        "➡️ Next build ideas",
+        items=ensure_list(analysis.get("nextBuildIdeas"), [], limit=5),
+        bg=(251, 235, 255),
+        width=width
+    )
+
+    footer_font = load_font(13, bold=True)
+    draw.text((margin, y + 4), "Troy AI Analyzer", fill=(154, 106, 33), font=footer_font)
+    y += 36
+
+    final = canvas.crop((0, 0, width, min(y, max_height)))
+
+    buffer = BytesIO()
+    final.save(buffer, format="PNG", optimize=True)
+    buffer.seek(0)
+
+    return buffer
+
+
+def decode_data_url(data_url):
+    if not data_url:
+        return None
+
+    try:
+        if "," in data_url:
+            data_url = data_url.split(",", 1)[1]
+
+        return base64.b64decode(data_url)
+
+    except Exception:
+        return None
+
+
+# =========================================================
 # Routes
 # =========================================================
 
@@ -1698,7 +2112,8 @@ def health():
         "absolute_min_confidence": ABSOLUTE_MIN_CONFIDENCE,
         "cache_items": len(analysis_cache),
         "upload_limit_per_ip_per_day": UPLOAD_LIMIT_PER_IP_PER_DAY,
-        "upload_cooldown_seconds": UPLOAD_COOLDOWN_SECONDS
+        "upload_cooldown_seconds": UPLOAD_COOLDOWN_SECONDS,
+        "download_card_enabled": True
     })
 
 
@@ -1743,11 +2158,14 @@ def analyze():
                 "details": str(e)
             }), 400
 
+        image_id = save_analysis_image(image_base64, image_hash)
+
         cache_key = f"{image_hash}:{age}"
 
         if cache_key in analysis_cache:
             cached = analysis_cache[cache_key].copy()
             cached["cached"] = True
+            cached["image_id"] = image_id or cached.get("image_id", "")
             analysis_cache.move_to_end(cache_key)
 
             save_analysis_event(
@@ -1757,10 +2175,13 @@ def analyze():
                 cached=True
             )
 
+            sessions[cached["session_id"]] = cached
+
             return jsonify(cached), 200
 
         result = analyze_image_with_fallback(image_base64, image_data_url, age, image_hash)
         result["cached"] = False
+        result["image_id"] = image_id
 
         save_analysis_event(
             result,
@@ -1777,7 +2198,8 @@ def analyze():
                 "groq_model": get_groq_vision_model(),
                 "pattern_count": len(TROY_PATTERN_LIBRARY),
                 "strict_book_matching": True,
-                "creative_mode": True
+                "creative_mode": True,
+                "download_card_url": f"/download-card/{result['session_id']}"
             }
 
         save_cache(cache_key, result)
@@ -1811,6 +2233,85 @@ def analyze():
         return jsonify({
             "error": "Something went wrong",
             "details": error_text
+        }), 500
+
+
+@app.route("/download-card/<session_id>", methods=["GET"])
+def download_card_by_session(session_id):
+    try:
+        result = sessions.get(session_id)
+
+        if not result:
+            return jsonify({
+                "error": "Session not found. Please analyze the image again."
+            }), 404
+
+        image_bytes = load_analysis_image(result.get("image_id"))
+        card_buffer = create_feedback_card_png(result, image_bytes=image_bytes)
+
+        title = clean_build_title(result.get("buildGuess", {}).get("title", "troy-feedback"))
+        safe_title = secure_filename(title.lower().replace(" ", "-")) or "troy-feedback"
+
+        return send_file(
+            card_buffer,
+            mimetype="image/png",
+            as_attachment=True,
+            download_name=f"{safe_title}-feedback-card.png"
+        )
+
+    except Exception as e:
+        print("Download card error:", str(e))
+
+        return jsonify({
+            "error": "Could not generate feedback card.",
+            "details": str(e)
+        }), 500
+
+
+@app.route("/download-card", methods=["POST"])
+def download_card_from_payload():
+    try:
+        image_bytes = None
+        analysis = None
+
+        if request.content_type and "multipart/form-data" in request.content_type:
+            analysis_json = request.form.get("analysis_json", "")
+
+            if not analysis_json:
+                return jsonify({"error": "analysis_json is required."}), 400
+
+            analysis = json.loads(analysis_json)
+
+            if "image" in request.files:
+                image_file = request.files["image"]
+                image_bytes = image_file.read()
+
+        else:
+            data = request.get_json() or {}
+            analysis = data.get("analysis") or data
+            image_bytes = decode_data_url(data.get("image_data_url") or data.get("imageDataUrl"))
+
+        if not isinstance(analysis, dict):
+            return jsonify({"error": "Valid analysis JSON is required."}), 400
+
+        card_buffer = create_feedback_card_png(analysis, image_bytes=image_bytes)
+
+        title = clean_build_title(analysis.get("buildGuess", {}).get("title", "troy-feedback"))
+        safe_title = secure_filename(title.lower().replace(" ", "-")) or "troy-feedback"
+
+        return send_file(
+            card_buffer,
+            mimetype="image/png",
+            as_attachment=True,
+            download_name=f"{safe_title}-feedback-card.png"
+        )
+
+    except Exception as e:
+        print("Download card from payload error:", str(e))
+
+        return jsonify({
+            "error": "Could not generate feedback card.",
+            "details": str(e)
         }), 500
 
 
