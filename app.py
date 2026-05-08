@@ -61,9 +61,14 @@ SECOND_OPINION_ON_INVALID = os.environ.get("SECOND_OPINION_ON_INVALID", "false")
 # Strictness settings
 # =========================================================
 
-BOOK_MATCH_THRESHOLD = 93
-VALID_CONFIDENCE_THRESHOLD = 78
-ABSOLUTE_MIN_CONFIDENCE = 70
+# Book matching should be strict.
+BOOK_MATCH_THRESHOLD = 94
+
+# Creative child-made builds should not be rejected too easily.
+VALID_CONFIDENCE_THRESHOLD = 72
+
+# Below this, always invalid.
+ABSOLUTE_MIN_CONFIDENCE = 60
 
 
 # =========================================================
@@ -650,7 +655,7 @@ def remove_page_words(text):
     return clean_text(text)
 
 
-def clean_build_title(title, fallback="Troy Block Creation"):
+def clean_build_title(title, fallback="Troy Creation"):
     text = remove_page_words(clean_text(title, fallback))
 
     bad_suffix_patterns = [
@@ -764,14 +769,17 @@ Known Troy pattern reference list:
 
 Your job:
 1. First check whether the image clearly matches a known Troy pattern.
-2. If it exactly matches, use the known pattern name exactly.
-3. If it does not exactly match, analyze the build creatively using only visible evidence.
-4. If the image is unclear or the evidence is weak, mark it invalid.
+2. If it strongly matches a known pattern, use the known pattern name exactly.
+3. If it does not strongly match the book, treat it as the child's own creative build.
+4. For creative builds, give a fun, accurate, specific guess based on visible block features.
+5. If the image is unclear or the build is not visible enough, mark it invalid.
 
 STRICT BOOK MATCH RULE:
-If the uploaded build is the same as a known pattern:
+Use book_pattern only when the uploaded build is clearly the same as a known Troy pattern.
+
+For book_pattern:
 - matchType must be "book_pattern"
-- matchConfidence must be 93 or above
+- matchConfidence must be 94 or above
 - matchedPattern.id must exactly match the known pattern id
 - matchedPattern.name must exactly match the known pattern name
 - buildGuess.title must exactly equal the known pattern name
@@ -781,7 +789,6 @@ If the uploaded build is the same as a known pattern:
 - do not mention page numbers
 - matchedCues must contain at least 3 visible cues
 - each cue must be directly visible in the uploaded photo
-- if you cannot list 3 matching cues, do not use book_pattern
 
 A book match needs:
 - same overall silhouette
@@ -791,44 +798,61 @@ A book match needs:
 
 If it shares only one or two small features with a known pattern:
 - do not call it a book pattern
-- use creative_guess only if the build is still clearly visible
+- use creative_guess
 
-CREATIVE GUESS RULE:
-If it does not match the book:
+CREATIVE BUILD RULE:
+If the child built something of their own:
 - matchType must be "creative_guess"
 - matchedPattern must be null
-- confidenceScore must be 78 or above
-- buildGuess.title must be a short object name only
-- no "Style Build"
-- no "Build", "Model", or "Structure" suffix
-- do not use vague names like "Abstract Structure" or "Open-ended Troy Block Build"
-- give the best accurate guess based on visible features
+- confidenceScore should be 72 or above if the build is clear
+- give the best object guess based on visible features
+- the title must be short and natural
+- examples: "Giraffe", "Rocket", "Crane", "Robot", "Animal House", "Tall Watchtower", "Playground Slide"
+- do not use dry titles like "Block Arrangement", "Troy Block Creation", "Abstract Structure", or "Open-ended Build"
+- do not add "Style Build", "Build", "Model", or "Structure" at the end
+- explain why you guessed it using visible details
+- make the feedback feel personal to this exact creation
+
+For animals or characters:
+- mention visible body parts like head, neck, legs, body, tail, or face if visible
+- learning cards should focus on body planning, character making, balance, storytelling, and shape mapping
+
+For vehicles:
+- mention base, wheels, body, front/back, cabin, or direction if visible
+
+For buildings:
+- mention floors, roof, entrance, pillars, levels, supports, or rooms if visible
+
+For bridges/roads:
+- mention span, path, gap, supports, ramps, or direction if visible
 
 INVALID RULE:
-Mark imageStatus as "invalid" if:
+Mark imageStatus as "invalid" only if:
 - Troy blocks are not clearly visible
 - the photo is blurry, dark, cropped, too far, partially hidden, or low quality
-- the build takes up only a small part of the image
-- there is not enough visible evidence for a strong guess
-- you would need to say maybe, possibly, perhaps, hard to tell, unclear, or not sure
+- the build takes up only a very small part of the image
+- there is not enough visible evidence for any reasonable guess
 - fewer than 2 visible construction features can be identified
 
 Visible construction features include:
-base, supports, wheels/cylinders, levels/floors, bridge span, arch/opening, roof-like top, repeated blocks, symmetry, curved pieces, long body, cabin, tower, ramp, path, platform.
+base, supports, wheels/cylinders, levels/floors, bridge span, arch/opening, roof-like top, repeated blocks, symmetry, curved pieces, long body, cabin, tower, ramp, path, platform, head, neck, legs, body, tail.
 
 Important wording rules:
 - Never mention page numbers.
 - Do not say "page", "book page", or "from page".
 - Do not use "Style Build".
+- If the guess is Giraffe, title should be exactly "Giraffe".
 - If the guess is Aeroplane, title should be exactly "Aeroplane".
 - If the guess is Pickup Truck, title should be exactly "Pickup Truck".
 - If the guess is Temple, title should be exactly "Temple".
 
 Learning feedback rules:
 - Every learning card must mention visible details.
+- Make the learning feedback specific to the child's creation.
+- Do not give the same generic feedback repeatedly.
 - Do not use generic titles.
 - Do not use: Creativity, Problem-Solving, Problem Solving, Spatial Awareness, Spatial Thinking, Imagination, Motor Skills, Fine Motor Skills, Engineering, STEM Learning, Critical Thinking.
-- Use specific titles like: Layer Planning, Bridge Support, Moving Base Idea, Roof Shape Experiment, Open-Space Design, Block Pattern Play, Careful Stacking, Shape Combining, Build-and-Tell Practice, Support Below Space Above, Vehicle Shape Thinking, Room-Making, Testing What Holds.
+- Use specific titles like: Animal Body Planning, Long-Neck Balance, Character-Making, Shape Mapping, Layer Planning, Bridge Support, Moving Base Idea, Roof Shape Experiment, Open-Space Design, Block Pattern Play, Careful Stacking, Shape Combining, Build-and-Tell Practice, Support Below Space Above, Vehicle Shape Thinking, Room-Making, Testing What Holds.
 
 Return JSON only in this exact shape:
 
@@ -893,7 +917,7 @@ Return JSON only in this exact shape:
 
 Invalid output rules:
 - imageStatus must be "invalid"
-- confidenceScore must be below 70
+- confidenceScore must be below 60
 - matchType must be "invalid"
 - matchedPattern must contain null values
 - buildGuess.title must be exactly "We couldn’t clearly analyze this image"
@@ -934,6 +958,30 @@ def creative_fallback_cards(build_guess, summary, noticed, image_hash, matched_p
     main_detail = noticed[0] if noticed else "the visible block arrangement"
 
     card_pool = []
+
+    if contains_any(context, ["animal", "giraffe", "neck", "legs", "head", "body", "tail", "creature", "dog", "cat", "horse", "dinosaur", "bird"]):
+        card_pool.extend([
+            {
+                "title": "Animal Body Planning",
+                "description": f"The child mapped simple blocks into animal-like parts, especially around {main_detail}.",
+                "color": "cream"
+            },
+            {
+                "title": "Long-Neck Balance",
+                "description": "The child experimented with making a taller neck or upper section while keeping the body steady.",
+                "color": "green"
+            },
+            {
+                "title": "Character-Making",
+                "description": "The build shows the child turning block shapes into a character that can be named and described.",
+                "color": "blue"
+            },
+            {
+                "title": "Head-Body-Leg Mapping",
+                "description": "The child practiced connecting different block positions to body parts like head, body, and legs.",
+                "color": "cream"
+            }
+        ])
 
     if contains_any(context, ["level", "floor", "platform", "layer", "upper", "lower", "multi-level"]):
         card_pool.extend([
@@ -1042,13 +1090,13 @@ def creative_fallback_cards(build_guess, summary, noticed, image_hash, matched_p
 
     card_pool.extend([
         {
-            "title": "Block Decision-Making",
-            "description": f"The child made choices about where to place pieces, especially around {main_detail}.",
+            "title": "Shape Mapping",
+            "description": f"The child connected visible block positions to a meaningful form, especially around {main_detail}.",
             "color": "cream"
         },
         {
-            "title": "Shape Combining",
-            "description": "The child explored how different block shapes can come together to create one bigger idea.",
+            "title": "Block Decision-Making",
+            "description": f"The child made choices about where to place pieces, especially around {main_detail}.",
             "color": "green"
         },
         {
@@ -1471,9 +1519,9 @@ def analyze_with_gemini_rest(image_base64, age, image_hash):
             }
         ],
         "generationConfig": {
-            "temperature": 0.35,
-            "topP": 0.8,
-            "maxOutputTokens": 1500,
+            "temperature": 0.45,
+            "topP": 0.85,
+            "maxOutputTokens": 1700,
             "responseMimeType": "application/json"
         }
     }
@@ -1509,7 +1557,7 @@ def analyze_with_groq_rest(image_data_url, age, image_hash):
         "messages": [
             {
                 "role": "system",
-                "content": "You are a strict but fair visual analyzer. Return valid JSON only."
+                "content": "You are a strict but creative visual analyzer. Return valid JSON only."
             },
             {
                 "role": "user",
@@ -1527,9 +1575,9 @@ def analyze_with_groq_rest(image_data_url, age, image_hash):
                 ]
             }
         ],
-        "temperature": 0.35,
-        "top_p": 0.8,
-        "max_completion_tokens": 1500,
+        "temperature": 0.45,
+        "top_p": 0.85,
+        "max_completion_tokens": 1700,
         "response_format": {
             "type": "json_object"
         }
@@ -1728,7 +1776,8 @@ def analyze():
                 "gemini_model": get_gemini_model(),
                 "groq_model": get_groq_vision_model(),
                 "pattern_count": len(TROY_PATTERN_LIBRARY),
-                "strict_mode": True
+                "strict_book_matching": True,
+                "creative_mode": True
             }
 
         save_cache(cache_key, result)
