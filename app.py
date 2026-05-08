@@ -489,6 +489,111 @@ def parse_json_response(text):
     return json.loads(cleaned)
 
 
+def clamp_score(value):
+    try:
+        score = int(float(value))
+    except Exception:
+        score = 1
+
+    return max(1, min(5, score))
+
+
+def meter_item(value, fallback_score=1, fallback_reason="Not enough visible evidence to score strongly."):
+    if isinstance(value, dict):
+        score = clamp_score(value.get("score", fallback_score))
+        reason = clean_text(value.get("reason"), fallback_reason)
+    else:
+        score = clamp_score(value or fallback_score)
+        reason = fallback_reason
+
+    return {
+        "score": score,
+        "reason": reason
+    }
+
+
+def default_troy_thinking_meter(is_invalid=False):
+    if is_invalid:
+        reason = "The image needs to be clearer before this skill can be judged accurately."
+
+        return {
+            "symmetry": {"score": 1, "reason": reason},
+            "creativity": {"score": 1, "reason": reason},
+            "spatialSkills": {"score": 1, "reason": reason},
+            "stability": {"score": 1, "reason": reason},
+            "problemSolving": {"score": 1, "reason": reason},
+            "focusAndDetail": {"score": 1, "reason": reason}
+        }
+
+    return {
+        "symmetry": {
+            "score": 3,
+            "reason": "The build shows some organized placement, but symmetry depends on the visible left and right balance."
+        },
+        "creativity": {
+            "score": 4,
+            "reason": "The build appears to represent an idea rather than random stacking."
+        },
+        "spatialSkills": {
+            "score": 3,
+            "reason": "The child used visible space and block positioning to form a structure."
+        },
+        "stability": {
+            "score": 3,
+            "reason": "The build appears reasonably supported from the visible base and vertical parts."
+        },
+        "problemSolving": {
+            "score": 3,
+            "reason": "The child made placement choices to connect and support parts of the build."
+        },
+        "focusAndDetail": {
+            "score": 3,
+            "reason": "The build shows intentional placement, though more detail could make it stronger."
+        }
+    }
+
+
+def normalize_troy_thinking_meter(raw_meter, is_invalid=False):
+    if is_invalid:
+        return default_troy_thinking_meter(is_invalid=True)
+
+    if not isinstance(raw_meter, dict):
+        return default_troy_thinking_meter(is_invalid=False)
+
+    return {
+        "symmetry": meter_item(
+            raw_meter.get("symmetry"),
+            fallback_score=3,
+            fallback_reason="The build shows some balance, but perfect mirroring is not fully clear."
+        ),
+        "creativity": meter_item(
+            raw_meter.get("creativity"),
+            fallback_score=4,
+            fallback_reason="The build shows an original idea or recognizable object."
+        ),
+        "spatialSkills": meter_item(
+            raw_meter.get("spatialSkills"),
+            fallback_score=3,
+            fallback_reason="The child used visible block placement and space to form the build."
+        ),
+        "stability": meter_item(
+            raw_meter.get("stability"),
+            fallback_score=3,
+            fallback_reason="The structure appears reasonably supported based on the visible base."
+        ),
+        "problemSolving": meter_item(
+            raw_meter.get("problemSolving"),
+            fallback_score=3,
+            fallback_reason="The child solved simple placement and support challenges."
+        ),
+        "focusAndDetail": meter_item(
+            raw_meter.get("focusAndDetail"),
+            fallback_score=3,
+            fallback_reason="The build shows intentional placement and some detail."
+        )
+    }
+
+
 def is_rate_limit_error(error_text):
     lower = error_text.lower()
 
@@ -800,7 +905,8 @@ Your job:
 2. If it strongly matches a known pattern, use the known pattern name exactly.
 3. If it does not strongly match the book, treat it as the child's own creative build.
 4. For creative builds, give a fun, accurate, specific guess based on visible block features.
-5. If the image is unclear or the build is not visible enough, mark it invalid.
+5. Score the child's build using the Troy Thinking Meter.
+6. If the image is unclear or the build is not visible enough, mark it invalid.
 
 STRICT BOOK MATCH RULE:
 Use book_pattern only when the uploaded build is clearly the same as a known Troy pattern.
@@ -865,6 +971,39 @@ Mark imageStatus as "invalid" only if:
 Visible construction features include:
 base, supports, wheels/cylinders, levels/floors, bridge span, arch/opening, roof-like top, repeated blocks, symmetry, curved pieces, long body, cabin, tower, ramp, path, platform, head, neck, legs, body, tail.
 
+TROY THINKING METER:
+Score each parameter from 1 to 5.
+Return a short reason for each score.
+Use only visible evidence from the uploaded build.
+
+1. Symmetry:
+"Look at the structure — are both sides balanced and mirrored? Rate 1-5 where 1 = completely random placement, 5 = both sides perfectly balanced."
+
+2. Creativity:
+"How imaginative and unique is this build? Does it represent something recognizable or show original thinking? Rate 1-5 where 1 = random stacking, 5 = highly creative recognizable structure."
+
+3. Spatial Skills:
+"How well are the blocks arranged in 3D space? Is there depth, layering, good use of space? Rate 1-5 where 1 = flat single layer, 5 = complex multi-level spatial arrangement."
+
+4. Stability:
+"Does the structure look physically stable and well-balanced? Rate 1-5 where 1 = looks like it would fall immediately, 5 = solid and well-engineered."
+
+5. Problem Solving:
+"Did the child solve structural challenges like bridging gaps, supporting weight, or creating height? Rate 1-5 where 1 = simple pile, 5 = clearly solved complex building challenges."
+
+6. Focus & Detail:
+"How complete and detailed is the build? Are edges neat, pieces aligned? Rate 1-5 where 1 = rough incomplete, 5 = neat detailed and complete."
+
+Important scoring rules:
+- Do not give all 5s unless the build is genuinely excellent.
+- Do not give all 3s lazily.
+- Creativity can be high even if symmetry is low.
+- Stability can be high even if creativity is medium.
+- Spatial Skills should be higher when there are layers, levels, height, depth, gaps, bridges, or 3D arrangement.
+- Problem Solving should be higher when the child solved support, height, balancing, bridge, gap, or multi-part construction.
+- Focus & Detail should be higher when the build looks complete, aligned, intentional, and neat.
+- If imageStatus is invalid, all Troy Thinking Meter scores should be 1 with reasons saying the photo needs to be clearer.
+
 Important wording rules:
 - Never mention page numbers.
 - Do not say "page", "book page", or "from page".
@@ -910,6 +1049,32 @@ Return JSON only in this exact shape:
     "title": "What we found",
     "summary": "2 short sentences describing only visible details"
   }},
+  "troyThinkingMeter": {{
+    "symmetry": {{
+      "score": 1,
+      "reason": "short visible reason"
+    }},
+    "creativity": {{
+      "score": 1,
+      "reason": "short visible reason"
+    }},
+    "spatialSkills": {{
+      "score": 1,
+      "reason": "short visible reason"
+    }},
+    "stability": {{
+      "score": 1,
+      "reason": "short visible reason"
+    }},
+    "problemSolving": {{
+      "score": 1,
+      "reason": "short visible reason"
+    }},
+    "focusAndDetail": {{
+      "score": 1,
+      "reason": "short visible reason"
+    }}
+  }},
   "whatTheyLearned": [
     {{
       "title": "specific learning skill title",
@@ -951,6 +1116,7 @@ Invalid output rules:
 - matchedPattern must contain null values
 - buildGuess.title must be exactly "We couldn’t clearly analyze this image"
 - whatTheyLearned must be []
+- all troyThinkingMeter scores must be 1
 """
 
 
@@ -1364,6 +1530,7 @@ def build_invalid_response(summary=None):
             "title": "What we found",
             "summary": reason
         },
+        "troyThinkingMeter": default_troy_thinking_meter(is_invalid=True),
         "whatTheyLearned": [],
         "whatWeNoticed": [
             "The build is not clear enough in the photo.",
@@ -1473,6 +1640,10 @@ def normalize_analysis_response(parsed, image_hash):
             "title": "What we found",
             "summary": normalized_summary
         },
+        "troyThinkingMeter": normalize_troy_thinking_meter(
+            parsed.get("troyThinkingMeter"),
+            is_invalid=False
+        ),
         "whatTheyLearned": normalize_learning_cards(
             parsed.get("whatTheyLearned"),
             normalized_build_guess,
@@ -1515,6 +1686,8 @@ def normalize_analysis_response(parsed, image_hash):
 # =========================================================
 
 def save_analysis_event(result, filename="", image_hash="", cached=False):
+    meter = result.get("troyThinkingMeter") or {}
+
     event = {
         "created_at": datetime.utcnow().isoformat(),
         "session_id": result.get("session_id"),
@@ -1526,7 +1699,15 @@ def save_analysis_event(result, filename="", image_hash="", cached=False):
         "cached": cached,
         "filename": filename,
         "image_hash": image_hash[:12] if image_hash else "",
-        "user_ip": get_client_ip()
+        "user_ip": get_client_ip(),
+        "thinking_meter": {
+            "symmetry": meter.get("symmetry", {}).get("score"),
+            "creativity": meter.get("creativity", {}).get("score"),
+            "spatialSkills": meter.get("spatialSkills", {}).get("score"),
+            "stability": meter.get("stability", {}).get("score"),
+            "problemSolving": meter.get("problemSolving", {}).get("score"),
+            "focusAndDetail": meter.get("focusAndDetail", {}).get("score")
+        }
     }
 
     append_jsonl(ANALYTICS_FILE, event)
@@ -1564,7 +1745,7 @@ def analyze_with_gemini_rest(image_base64, age, image_hash):
         "generationConfig": {
             "temperature": 0.45,
             "topP": 0.85,
-            "maxOutputTokens": 1700,
+            "maxOutputTokens": 1900,
             "responseMimeType": "application/json"
         }
     }
@@ -1620,7 +1801,7 @@ def analyze_with_groq_rest(image_data_url, age, image_hash):
         ],
         "temperature": 0.45,
         "top_p": 0.85,
-        "max_completion_tokens": 1700,
+        "max_completion_tokens": 1900,
         "response_format": {
             "type": "json_object"
         }
@@ -1857,14 +2038,17 @@ def draw_learning_section(draw, y, cards, width=520):
     section_height = padding + measure_wrapped_text(draw, "🧠 What they learned", title_font, content_width) + 10
 
     card_heights = []
+
     for index, card in enumerate(cards):
         card_title = f"{index + 1}. {clean_text(card.get('title'))}"
         card_body = clean_text(card.get("description"))
+
         h = 12
         h += measure_wrapped_text(draw, card_title, card_title_font, content_width - 20)
         h += 5
         h += measure_wrapped_text(draw, card_body, body_font, content_width - 20)
         h += 12
+
         card_heights.append(h)
         section_height += h + 8
 
@@ -1905,7 +2089,9 @@ def draw_learning_section(draw, y, cards, width=520):
             (47, 58, 47),
             content_width - 20
         )
+
         inner_y += 5
+
         draw_wrapped_text(
             draw,
             x1 + padding + 10,
@@ -1921,9 +2107,105 @@ def draw_learning_section(draw, y, cards, width=520):
     return y + section_height + 12
 
 
+def draw_troy_meter_section(draw, y, meter, width=520):
+    if not isinstance(meter, dict):
+        return y
+
+    labels = [
+        ("Symmetry", "symmetry"),
+        ("Creativity", "creativity"),
+        ("Spatial Skills", "spatialSkills"),
+        ("Stability", "stability"),
+        ("Problem Solving", "problemSolving"),
+        ("Focus & Detail", "focusAndDetail")
+    ]
+
+    margin = 18
+    padding = 14
+    x1 = margin
+    x2 = width - margin
+    content_width = x2 - x1 - (padding * 2)
+
+    title_font = load_font(14, bold=True)
+    label_font = load_font(12, bold=True)
+    body_font = load_font(10, bold=False)
+
+    section_height = padding + measure_wrapped_text(draw, "📊 Troy Thinking Meter", title_font, content_width) + 12
+
+    row_heights = []
+
+    for label, key in labels:
+        item = meter.get(key, {})
+        reason = clean_text(item.get("reason"), "")
+        h = 28 + measure_wrapped_text(draw, reason, body_font, content_width - 20)
+        row_heights.append(h)
+        section_height += h + 8
+
+    section_height += padding
+
+    draw.rounded_rectangle(
+        [x1, y, x2, y + section_height],
+        radius=14,
+        fill=(255, 247, 223),
+        outline=(234, 223, 202),
+        width=1
+    )
+
+    cy = y + padding
+    cy = draw_wrapped_text(draw, x1 + padding, cy, "📊 Troy Thinking Meter", title_font, (47, 58, 47), content_width)
+    cy += 12
+
+    for index, (label, key) in enumerate(labels):
+        item = meter.get(key, {})
+        score = clamp_score(item.get("score", 1))
+        reason = clean_text(item.get("reason"), "")
+
+        row_y = cy
+        row_h = row_heights[index]
+
+        draw.rounded_rectangle(
+            [x1 + padding, row_y, x2 - padding, row_y + row_h],
+            radius=12,
+            fill=(255, 255, 255),
+            outline=(234, 223, 202),
+            width=1
+        )
+
+        tx = x1 + padding + 10
+        ty = row_y + 8
+
+        draw.text((tx, ty), f"{label}: {score}/5", fill=(47, 58, 47), font=label_font)
+
+        dots_x = x2 - padding - 95
+        dot_y = ty + 4
+
+        for dot in range(5):
+            fill = (47, 107, 79) if dot < score else (220, 220, 220)
+            draw.ellipse(
+                [dots_x + dot * 18, dot_y, dots_x + dot * 18 + 10, dot_y + 10],
+                fill=fill
+            )
+
+        ty += 22
+
+        draw_wrapped_text(
+            draw,
+            tx,
+            ty,
+            reason,
+            body_font,
+            (75, 85, 99),
+            content_width - 20
+        )
+
+        cy += row_h + 8
+
+    return y + section_height + 12
+
+
 def create_feedback_card_png(analysis, image_bytes=None):
     width = 520
-    max_height = 9000
+    max_height = 10000
 
     bg_color = (255, 250, 240)
     canvas = Image.new("RGB", (width, max_height), bg_color)
@@ -1971,6 +2253,7 @@ def create_feedback_card_png(analysis, image_bytes=None):
         badge_text = "Needs Clearer Photo"
 
     badge_w, badge_h = text_size(draw, badge_text, small_font)
+
     draw.rounded_rectangle(
         [margin, y, margin + badge_w + 20, y + badge_h + 12],
         radius=999,
@@ -1978,6 +2261,7 @@ def create_feedback_card_png(analysis, image_bytes=None):
         outline=(234, 223, 202),
         width=1
     )
+
     draw.text((margin + 10, y + 6), badge_text, fill=(154, 106, 33), font=small_font)
     y += badge_h + 22
 
@@ -2000,6 +2284,13 @@ def create_feedback_card_png(analysis, image_bytes=None):
         "🔍 What we found",
         body=summary,
         bg=(255, 247, 223),
+        width=width
+    )
+
+    y = draw_troy_meter_section(
+        draw,
+        y,
+        analysis.get("troyThinkingMeter") or {},
         width=width
     )
 
@@ -2113,7 +2404,8 @@ def health():
         "cache_items": len(analysis_cache),
         "upload_limit_per_ip_per_day": UPLOAD_LIMIT_PER_IP_PER_DAY,
         "upload_cooldown_seconds": UPLOAD_COOLDOWN_SECONDS,
-        "download_card_enabled": True
+        "download_card_enabled": True,
+        "troy_thinking_meter_enabled": True
     })
 
 
@@ -2199,6 +2491,7 @@ def analyze():
                 "pattern_count": len(TROY_PATTERN_LIBRARY),
                 "strict_book_matching": True,
                 "creative_mode": True,
+                "troy_thinking_meter": True,
                 "download_card_url": f"/download-card/{result['session_id']}"
             }
 
@@ -2294,6 +2587,11 @@ def download_card_from_payload():
         if not isinstance(analysis, dict):
             return jsonify({"error": "Valid analysis JSON is required."}), 400
 
+        if "troyThinkingMeter" not in analysis:
+            analysis["troyThinkingMeter"] = default_troy_thinking_meter(
+                is_invalid=analysis.get("imageStatus") == "invalid"
+            )
+
         card_buffer = create_feedback_card_png(analysis, image_bytes=image_bytes)
 
         title = clean_build_title(analysis.get("buildGuess", {}).get("title", "troy-feedback"))
@@ -2329,6 +2627,7 @@ def save_feedback():
             "match_type": clean_text(data.get("matchType")),
             "confidence_score": data.get("confidenceScore", 0),
             "provider": clean_text(data.get("provider")),
+            "troy_thinking_meter": data.get("troyThinkingMeter", {}),
             "user_ip": get_client_ip()
         }
 
@@ -2369,6 +2668,36 @@ def admin_stats():
         correct_feedback = sum(1 for item in feedbacks if item.get("rating") == "correct")
         wrong_feedback = sum(1 for item in feedbacks if item.get("rating") == "wrong")
 
+        meter_keys = [
+            "symmetry",
+            "creativity",
+            "spatialSkills",
+            "stability",
+            "problemSolving",
+            "focusAndDetail"
+        ]
+
+        meter_totals = {key: 0 for key in meter_keys}
+        meter_counts = {key: 0 for key in meter_keys}
+
+        for item in analyses:
+            thinking_meter = item.get("thinking_meter") or {}
+
+            for key in meter_keys:
+                score = thinking_meter.get(key)
+
+                if isinstance(score, (int, float)):
+                    meter_totals[key] += score
+                    meter_counts[key] += 1
+
+        meter_averages = {}
+
+        for key in meter_keys:
+            if meter_counts[key] > 0:
+                meter_averages[key] = round(meter_totals[key] / meter_counts[key], 2)
+            else:
+                meter_averages[key] = 0
+
         return jsonify({
             "total_uploads": total_uploads,
             "valid_uploads": valid_uploads,
@@ -2377,6 +2706,7 @@ def admin_stats():
             "creative_guesses": creative_guesses,
             "provider_counts": dict(provider_counts),
             "top_guesses": guess_counts.most_common(10),
+            "thinking_meter_averages": meter_averages,
             "feedback": {
                 "total": len(feedbacks),
                 "correct": correct_feedback,
