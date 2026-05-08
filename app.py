@@ -8,7 +8,7 @@ import hashlib
 import random
 from io import BytesIO
 from pathlib import Path
-from collections import OrderedDict
+from collections import OrderedDict, Counter
 from datetime import datetime
 
 import requests
@@ -27,9 +27,14 @@ from werkzeug.exceptions import RequestEntityTooLarge
 BASE_DIR = Path(__file__).resolve().parent
 load_dotenv(BASE_DIR / ".env")
 
+DATA_DIR = BASE_DIR / "data"
+DATA_DIR.mkdir(exist_ok=True)
+
+FEEDBACK_FILE = DATA_DIR / "feedback.jsonl"
+ANALYTICS_FILE = DATA_DIR / "analytics.jsonl"
+
 app = Flask(__name__)
 
-# Old image-size setting
 app.config["MAX_CONTENT_LENGTH"] = 4 * 1024 * 1024  # 4 MB
 
 CORS_ORIGINS = os.environ.get("CORS_ORIGINS", "*")
@@ -37,7 +42,6 @@ CORS(app, origins=CORS_ORIGINS.split(","))
 
 ALLOWED_EXTENSIONS = {"png", "jpg", "jpeg", "webp"}
 
-# Old image-size setting
 MAX_BASE64_IMAGE_SIZE = 1_800_000
 Image.MAX_IMAGE_PIXELS = 15_000_000
 
@@ -50,8 +54,6 @@ ip_usage = {}
 UPLOAD_LIMIT_PER_IP_PER_DAY = int(os.environ.get("UPLOAD_LIMIT_PER_IP_PER_DAY", "25"))
 UPLOAD_COOLDOWN_SECONDS = int(os.environ.get("UPLOAD_COOLDOWN_SECONDS", "10"))
 
-# Set true only if you want extra accuracy.
-# It uses more free API quota because Gemini may be called after Groq returns invalid.
 SECOND_OPINION_ON_INVALID = os.environ.get("SECOND_OPINION_ON_INVALID", "false").lower() == "true"
 
 
@@ -59,13 +61,8 @@ SECOND_OPINION_ON_INVALID = os.environ.get("SECOND_OPINION_ON_INVALID", "false")
 # Strictness settings
 # =========================================================
 
-# Very strict pattern matching.
 BOOK_MATCH_THRESHOLD = 93
-
-# Creative guess must still be confident.
 VALID_CONFIDENCE_THRESHOLD = 78
-
-# Below this, always invalid.
 ABSOLUTE_MIN_CONFIDENCE = 70
 
 
@@ -358,12 +355,17 @@ def get_provider_order():
     return os.environ.get("PROVIDER_ORDER", "groq_first").strip().lower()
 
 
+def get_admin_key():
+    return os.environ.get("ADMIN_KEY", "").strip()
+
+
 print("Gemini key:", "FOUND" if get_gemini_api_key() else "NOT FOUND")
 print("Gemini model:", get_gemini_model())
 print("Groq key:", "FOUND" if get_groq_api_key() else "NOT FOUND")
 print("Groq vision model:", get_groq_vision_model())
 print("Provider order:", get_provider_order())
 print("Second opinion on invalid:", SECOND_OPINION_ON_INVALID)
+print("Admin key:", "FOUND" if get_admin_key() else "NOT FOUND")
 
 
 # =========================================================
@@ -423,6 +425,40 @@ def ensure_list(value, fallback=None, limit=3):
 def safe_get_dict(data, key):
     value = data.get(key)
     return value if isinstance(value, dict) else {}
+
+
+def append_jsonl(file_path, data):
+    with open(file_path, "a", encoding="utf-8") as file:
+        file.write(json.dumps(data, ensure_ascii=False) + "\n")
+
+
+def read_jsonl(file_path, limit=None):
+    if not file_path.exists():
+        return []
+
+    rows = []
+
+    with open(file_path, "r", encoding="utf-8") as file:
+        for line in file:
+            try:
+                rows.append(json.loads(line))
+            except Exception:
+                continue
+
+    if limit:
+        return rows[-limit:]
+
+    return rows
+
+
+def require_admin():
+    admin_key = get_admin_key()
+
+    if not admin_key:
+        return False
+
+    provided_key = request.headers.get("X-Admin-Key", "").strip()
+    return provided_key == admin_key
 
 
 def extract_json_block(text):
@@ -743,6 +779,9 @@ If the uploaded build is the same as a known pattern:
 - do not add "Style Build"
 - do not create a new creative name
 - do not mention page numbers
+- matchedCues must contain at least 3 visible cues
+- each cue must be directly visible in the uploaded photo
+- if you cannot list 3 matching cues, do not use book_pattern
 
 A book match needs:
 - same overall silhouette
@@ -803,7 +842,12 @@ Return JSON only in this exact shape:
     "name": "pattern name or null",
     "category": "pattern category or null",
     "matchConfidence": 0,
-    "whyMatched": "short visual reason or null"
+    "whyMatched": "short visual reason or null",
+    "matchedCues": [
+      "visible cue 1",
+      "visible cue 2",
+      "visible cue 3"
+    ]
   }},
   "buildGuess": {{
     "title": "short exact title only",
@@ -1115,6 +1159,12 @@ def normalize_matched_pattern(raw_matched_pattern, match_type):
     pattern_name = clean_text(raw_matched_pattern.get("name"))
     why_matched = clean_text(raw_matched_pattern.get("whyMatched"))
 
+    matched_cues = ensure_list(
+        raw_matched_pattern.get("matchedCues"),
+        [],
+        limit=5
+    )
+
     try:
         match_confidence = int(float(raw_matched_pattern.get("matchConfidence", 0)))
     except Exception:
@@ -1134,6 +1184,9 @@ def normalize_matched_pattern(raw_matched_pattern, match_type):
     if match_confidence < BOOK_MATCH_THRESHOLD:
         return None
 
+    if len(matched_cues) < 3:
+        return None
+
     return {
         "id": library_pattern["id"],
         "name": library_pattern["name"],
@@ -1141,7 +1194,8 @@ def normalize_matched_pattern(raw_matched_pattern, match_type):
         "matchConfidence": match_confidence,
         "whyMatched": remove_page_words(
             why_matched or "the visible structure matches the main shape and block arrangement"
-        )
+        ),
+        "matchedCues": [remove_page_words(cue) for cue in matched_cues]
     }
 
 
@@ -1366,6 +1420,28 @@ def normalize_analysis_response(parsed, image_hash):
 
 
 # =========================================================
+# Analytics helpers
+# =========================================================
+
+def save_analysis_event(result, filename="", image_hash="", cached=False):
+    event = {
+        "created_at": datetime.utcnow().isoformat(),
+        "session_id": result.get("session_id"),
+        "image_status": result.get("imageStatus"),
+        "match_type": result.get("matchType"),
+        "guess": result.get("buildGuess", {}).get("title"),
+        "confidence_score": result.get("confidenceScore"),
+        "provider": result.get("provider"),
+        "cached": cached,
+        "filename": filename,
+        "image_hash": image_hash[:12] if image_hash else "",
+        "user_ip": get_client_ip()
+    }
+
+    append_jsonl(ANALYTICS_FILE, event)
+
+
+# =========================================================
 # AI provider calls using lightweight REST
 # =========================================================
 
@@ -1567,6 +1643,7 @@ def health():
         "groq_vision_model": get_groq_vision_model(),
         "provider_order": get_provider_order(),
         "second_opinion_on_invalid": SECOND_OPINION_ON_INVALID,
+        "admin_key_loaded": bool(get_admin_key()),
         "pattern_count": len(TROY_PATTERN_LIBRARY),
         "book_match_threshold": BOOK_MATCH_THRESHOLD,
         "valid_confidence_threshold": VALID_CONFIDENCE_THRESHOLD,
@@ -1624,10 +1701,25 @@ def analyze():
             cached = analysis_cache[cache_key].copy()
             cached["cached"] = True
             analysis_cache.move_to_end(cache_key)
+
+            save_analysis_event(
+                cached,
+                filename=filename,
+                image_hash=image_hash,
+                cached=True
+            )
+
             return jsonify(cached), 200
 
         result = analyze_image_with_fallback(image_base64, image_data_url, age, image_hash)
         result["cached"] = False
+
+        save_analysis_event(
+            result,
+            filename=filename,
+            image_hash=image_hash,
+            cached=False
+        )
 
         if os.environ.get("SHOW_DEBUG", "false").lower() == "true":
             result["debug"] = {
@@ -1670,6 +1762,85 @@ def analyze():
         return jsonify({
             "error": "Something went wrong",
             "details": error_text
+        }), 500
+
+
+@app.route("/feedback", methods=["POST"])
+def save_feedback():
+    try:
+        data = request.get_json() or {}
+
+        feedback_item = {
+            "created_at": datetime.utcnow().isoformat(),
+            "session_id": clean_text(data.get("session_id")),
+            "rating": clean_text(data.get("rating")),
+            "actual_build": clean_text(data.get("actualBuild")),
+            "ai_guess": clean_text(data.get("aiGuess")),
+            "match_type": clean_text(data.get("matchType")),
+            "confidence_score": data.get("confidenceScore", 0),
+            "provider": clean_text(data.get("provider")),
+            "user_ip": get_client_ip()
+        }
+
+        append_jsonl(FEEDBACK_FILE, feedback_item)
+
+        return jsonify({
+            "status": "saved",
+            "message": "Feedback saved successfully."
+        }), 200
+
+    except Exception as e:
+        print("Feedback error:", str(e))
+
+        return jsonify({
+            "error": "Could not save feedback."
+        }), 500
+
+
+@app.route("/admin/stats", methods=["GET"])
+def admin_stats():
+    try:
+        if not require_admin():
+            return jsonify({"error": "Unauthorized"}), 401
+
+        analyses = read_jsonl(ANALYTICS_FILE)
+        feedbacks = read_jsonl(FEEDBACK_FILE)
+
+        total_uploads = len(analyses)
+        valid_uploads = sum(1 for item in analyses if item.get("image_status") == "valid")
+        invalid_uploads = sum(1 for item in analyses if item.get("image_status") == "invalid")
+
+        book_matches = sum(1 for item in analyses if item.get("match_type") == "book_pattern")
+        creative_guesses = sum(1 for item in analyses if item.get("match_type") == "creative_guess")
+
+        provider_counts = Counter(item.get("provider") or "unknown" for item in analyses)
+        guess_counts = Counter(item.get("guess") or "Unknown" for item in analyses)
+
+        correct_feedback = sum(1 for item in feedbacks if item.get("rating") == "correct")
+        wrong_feedback = sum(1 for item in feedbacks if item.get("rating") == "wrong")
+
+        return jsonify({
+            "total_uploads": total_uploads,
+            "valid_uploads": valid_uploads,
+            "invalid_uploads": invalid_uploads,
+            "book_matches": book_matches,
+            "creative_guesses": creative_guesses,
+            "provider_counts": dict(provider_counts),
+            "top_guesses": guess_counts.most_common(10),
+            "feedback": {
+                "total": len(feedbacks),
+                "correct": correct_feedback,
+                "wrong": wrong_feedback
+            },
+            "recent_uploads": analyses[-20:][::-1],
+            "recent_feedback": feedbacks[-20:][::-1]
+        }), 200
+
+    except Exception as e:
+        print("Admin stats error:", str(e))
+
+        return jsonify({
+            "error": "Could not load admin stats."
         }), 500
 
 
